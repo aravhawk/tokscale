@@ -318,20 +318,27 @@ impl OpenCodeSchemaConfig {
         }
     }
 
-    /// Kilo reads a single `message` table and has no duplicate sources, so it
-    /// keeps neither fingerprints nor workspace/duration metadata.
+    /// Kilo CLI.
+    ///
+    /// Current builds store one assistant step per `session_message` row: the
+    /// role lives in the SQL `type` column and the model is nested under
+    /// `$.model`. Older builds keep an OpenCode-style `message` table with
+    /// `$.role` and a top-level `modelID`. Both groups are read. `dual_schema`
+    /// accepts the nested model and a missing `$.role` (the SQL `type` filter
+    /// is what keeps user rows out of the new table).
     pub(crate) const fn kilo(fallback_timestamp: i64) -> Self {
         Self {
             query_groups: KILO_QUERY_GROUPS,
             fallback_provider: "kilo",
             infer_provider_from_model: true,
+            dual_schema: true,
             payload_session_id: true,
             normalize_agent: false,
             prefer_mode_over_agent: false,
             fallback_timestamp: Some(fallback_timestamp),
             record_duration: false,
             cost_provenance: CostProvenance::Never,
-            capture_workspace: false,
+            capture_workspace: true,
             dedup: DedupMode::Off,
             ..Self::base("kilo")
         }
@@ -602,7 +609,56 @@ const MICODE_QUERIES: &[&str] = &[
 
 const MICODE_QUERY_GROUPS: &[&[&str]] = &[MICODE_QUERIES];
 
-/// Kilo: a single `message` table with no session join.
+/// Current Kilo CLI: one assistant step per `session_message` row.
+///
+/// The role is the SQL `type` column, not `$.role`, and the model is nested
+/// under `$.model`. `session` carries the workspace directory and title;
+/// `session_v2` is only a fallback for databases that followed OpenCode's
+/// rename. The `json_valid` guard matches the legacy query: one malformed
+/// `data` blob otherwise makes `json_extract` abort the whole statement.
+const KILO_SESSION_MESSAGE_QUERIES: &[&str] = &[
+    r#"
+        SELECT sm.id, sm.session_id, sm.data, NULLIF(s.directory, '') AS workspace_root, s.title AS session_title, 1 AS eligible
+        FROM session_message sm
+        LEFT JOIN session s ON s.id = sm.session_id
+        WHERE sm.type = 'assistant'
+          AND json_valid(sm.data)
+          AND json_extract(sm.data, '$.tokens') IS NOT NULL
+    "#,
+    r#"
+        SELECT sm.id, sm.session_id, sm.data, NULLIF(s.directory, '') AS workspace_root, NULL AS session_title, 1 AS eligible
+        FROM session_message sm
+        LEFT JOIN session s ON s.id = sm.session_id
+        WHERE sm.type = 'assistant'
+          AND json_valid(sm.data)
+          AND json_extract(sm.data, '$.tokens') IS NOT NULL
+    "#,
+    r#"
+        SELECT sm.id, sm.session_id, sm.data, NULLIF(s.directory, '') AS workspace_root, s.title AS session_title, 1 AS eligible
+        FROM session_message sm
+        LEFT JOIN session_v2 s ON s.id = sm.session_id
+        WHERE sm.type = 'assistant'
+          AND json_valid(sm.data)
+          AND json_extract(sm.data, '$.tokens') IS NOT NULL
+    "#,
+    r#"
+        SELECT sm.id, sm.session_id, sm.data, NULLIF(s.directory, '') AS workspace_root, NULL AS session_title, 1 AS eligible
+        FROM session_message sm
+        LEFT JOIN session_v2 s ON s.id = sm.session_id
+        WHERE sm.type = 'assistant'
+          AND json_valid(sm.data)
+          AND json_extract(sm.data, '$.tokens') IS NOT NULL
+    "#,
+    r#"
+        SELECT sm.id, sm.session_id, sm.data, NULL AS workspace_root, NULL AS session_title, 1 AS eligible
+        FROM session_message sm
+        WHERE sm.type = 'assistant'
+          AND json_valid(sm.data)
+          AND json_extract(sm.data, '$.tokens') IS NOT NULL
+    "#,
+];
+
+/// Older Kilo CLI: a single `message` table, role and tokens inside `data`.
 ///
 /// The `json_valid` guard is load-bearing here and deliberately absent from the
 /// other clients: without it a single malformed `data` blob makes SQLite's
@@ -615,7 +671,10 @@ const KILO_QUERIES: &[&str] = &[r#"
           AND json_extract(m.data, '$.tokens') IS NOT NULL
     "#];
 
-const KILO_QUERY_GROUPS: &[&[&str]] = &[KILO_QUERIES];
+/// Both generations live in one database. A current file still creates the
+/// legacy `message` table, so the two queries cannot share a group: the first
+/// statement that prepares would win and the other table would be skipped.
+const KILO_QUERY_GROUPS: &[&[&str]] = &[KILO_SESSION_MESSAGE_QUERIES, KILO_QUERIES];
 
 // =============================================================================
 // Workspace helpers

@@ -1226,7 +1226,12 @@ const SHARED_PARSER_FAMILIES: &[SharedParserFamily] = &[
             // while retaining the original call's surface attribution.
             (ClientId::MiMoCode, 5),
             (ClientId::MiMoDesktop, 5),
-            (ClientId::Kilo, 0),
+            // +1: current Kilo CLI writes each assistant step to
+            // `session_message` (role in the `type` column, model nested
+            // under `$.model`). The previous parser only read the legacy
+            // `message` table, so a byte-identical current database parsed
+            // to zero usage.
+            (ClientId::Kilo, 1),
         ],
     },
     SharedParserFamily {
@@ -5708,7 +5713,7 @@ mod tests {
                     (ClientId::OpenCode, 2),
                     (ClientId::MiMoCode, 5),
                     (ClientId::MiMoDesktop, 5),
-                    (ClientId::Kilo, 0),
+                    (ClientId::Kilo, 1),
                 ],
             ),
             (

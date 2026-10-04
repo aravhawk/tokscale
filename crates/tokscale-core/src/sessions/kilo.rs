@@ -1,17 +1,20 @@
 //! Kilo CLI session parser
 //!
-//! Parses messages from:
-//! - SQLite database: ~/.local/share/kilo/kilo.db
+//! Parses messages from the SQLite database under the XDG data dir
+//! (`~/.local/share/kilo/kilo.db`, plus `kilo-<channel>.db` for non-stable
+//! release channels).
 //!
-//! Kilo stores assistant turns in OpenCode's message schema, so the parse
-//! itself lives in [`super::opencode_schema`]; only the places where Kilo's
-//! behaviour departs from OpenCode's are declared here, as
-//! `OpenCodeSchemaConfig::kilo`.
+//! Current Kilo CLI writes one assistant step per `session_message` row
+//! (role in the `type` column, model nested under `$.model`). Older builds
+//! keep that payload in a `message` table with `$.role` and a top-level
+//! `modelID`. Both are read through [`super::opencode_schema`]; the places
+//! where Kilo departs from OpenCode are `OpenCodeSchemaConfig::kilo`.
 
 use super::opencode_schema::{parse_opencode_schema_sqlite, OpenCodeSchemaConfig};
 use super::utils::file_modified_timestamp_ms;
 use super::UnifiedMessage;
-use std::path::Path;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 
 pub fn parse_kilo_sqlite(db_path: &Path) -> Vec<UnifiedMessage> {
     let fallback_timestamp = file_modified_timestamp_ms(db_path);
@@ -26,6 +29,28 @@ pub fn parse_kilo_sqlite_with_fallback(
     fallback_timestamp: i64,
 ) -> Vec<UnifiedMessage> {
     parse_opencode_schema_sqlite(db_path, OpenCodeSchemaConfig::kilo(fallback_timestamp))
+}
+
+/// Parse every discovered Kilo database, collapsing a message that was copied
+/// into more than one channel file.
+///
+/// Channel builds keep a separate `kilo-<channel>.db` next to `kilo.db`. The
+/// same step can land in both when a user switches channels, and the row id
+/// (the message id, since the payload omits `$.id`) is stable across that copy.
+pub fn parse_kilo_databases(db_paths: &[PathBuf]) -> Vec<UnifiedMessage> {
+    let mut seen = HashSet::new();
+    let mut messages = Vec::new();
+    for db_path in db_paths {
+        for message in parse_kilo_sqlite(db_path) {
+            if let Some(key) = message.dedup_key.as_deref() {
+                if !seen.insert(key.to_string()) {
+                    continue;
+                }
+            }
+            messages.push(message);
+        }
+    }
+    messages
 }
 
 #[cfg(test)]
@@ -206,5 +231,162 @@ mod tests {
     fn test_parse_kilo_sqlite_returns_empty_for_missing_db() {
         let messages = parse_kilo_sqlite(std::path::Path::new("/nonexistent/kilo.db"));
         assert!(messages.is_empty());
+    }
+
+    /// Current Kilo CLI never writes `$.role` or a top-level `modelID`. Each
+    /// assistant step is a `session_message` row whose `type` column is
+    /// `assistant` and whose payload nests the model under `$.model`. A
+    /// database that only has that table used to parse as zero usage.
+    #[test]
+    fn test_parse_kilo_sqlite_reads_session_message_steps() {
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("kilo.db");
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            r#"
+            CREATE TABLE session (
+                id TEXT PRIMARY KEY,
+                directory TEXT NOT NULL,
+                title TEXT NOT NULL
+            );
+            CREATE TABLE session_message (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                type TEXT NOT NULL,
+                data TEXT NOT NULL
+            );
+            INSERT INTO session (id, directory, title)
+            VALUES ('ses_1', '/work/repo', 'Fix the parser');
+            "#,
+        )
+        .unwrap();
+
+        let step = r#"{
+            "agent": "build",
+            "model": {"id": "claude-sonnet-4-6", "providerID": "anthropic"},
+            "cost": 0,
+            "tokens": {
+                "input": 800,
+                "output": 120,
+                "reasoning": 30,
+                "cache": {"read": 400, "write": 50}
+            },
+            "time": {"created": 1700000000456, "completed": 1700000001456},
+            "finish": "stop",
+            "content": [{"type": "text", "id": "txt_1", "text": "done"}]
+        }"#;
+        conn.execute(
+            "INSERT INTO session_message (id, session_id, type, data) VALUES (?1, ?2, ?3, ?4)",
+            params!["msg_step", "ses_1", "assistant", step],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO session_message (id, session_id, type, data) VALUES (?1, ?2, ?3, ?4)",
+            params![
+                "msg_user",
+                "ses_1",
+                "user",
+                r#"{"text":"hello","time":{"created":1700000000000}}"#
+            ],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO session_message (id, session_id, type, data) VALUES (?1, ?2, ?3, ?4)",
+            params![
+                "msg_open",
+                "ses_1",
+                "assistant",
+                r#"{"agent":"build","model":{"id":"claude-sonnet-4-6","providerID":"anthropic"},"time":{"created":1700000002000},"content":[]}"#
+            ],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO session_message (id, session_id, type, data) VALUES (?1, ?2, ?3, ?4)",
+            params!["msg_bad", "ses_1", "assistant", "{not-json"],
+        )
+        .unwrap();
+        drop(conn);
+
+        let messages = parse_kilo_sqlite_with_fallback(&db_path, 42);
+        assert_eq!(messages.len(), 1);
+
+        let msg = &messages[0];
+        assert_eq!(msg.client, "kilo");
+        assert_eq!(msg.session_id, "ses_1");
+        assert_eq!(msg.model_id, "claude-sonnet-4-6");
+        assert_eq!(msg.provider_id, "anthropic");
+        assert_eq!(msg.timestamp, 1_700_000_000_456);
+        assert_eq!(msg.tokens.input, 800);
+        assert_eq!(msg.tokens.output, 120);
+        assert_eq!(msg.tokens.reasoning, 30);
+        assert_eq!(msg.tokens.cache_read, 400);
+        assert_eq!(msg.tokens.cache_write, 50);
+        assert_eq!(msg.cost, 0.0);
+        assert_eq!(msg.agent.as_deref(), Some("build"));
+        assert_eq!(msg.dedup_key.as_deref(), Some("msg_step"));
+        assert_eq!(msg.session_title.as_deref(), Some("Fix the parser"));
+        assert_eq!(msg.workspace_key.as_deref(), Some("/work/repo"));
+        assert_eq!(msg.workspace_label.as_deref(), Some("repo"));
+    }
+
+    /// A current database still creates the legacy `message` table. Reading
+    /// only the first table that prepares would hide whichever generation
+    /// lost the race.
+    #[test]
+    fn test_parse_kilo_sqlite_reads_legacy_message_beside_session_message() {
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("kilo.db");
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            r#"
+            CREATE TABLE message (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                data TEXT NOT NULL
+            );
+            CREATE TABLE session_message (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                type TEXT NOT NULL,
+                data TEXT NOT NULL
+            );
+            "#,
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO message (id, session_id, data) VALUES (?1, ?2, ?3)",
+            params![
+                "legacy-1",
+                "ses_old",
+                r#"{"role":"assistant","modelID":"gpt-5.4","providerID":"openai","cost":0.2,"tokens":{"input":10,"output":4,"reasoning":0,"cache":{"read":0,"write":0}},"time":{"created":1700000000001}}"#
+            ],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO session_message (id, session_id, type, data) VALUES (?1, ?2, ?3, ?4)",
+            params![
+                "msg_new",
+                "ses_new",
+                "assistant",
+                r#"{"agent":"build","model":{"id":"claude-sonnet-4-6","providerID":"anthropic"},"cost":0,"tokens":{"input":20,"output":5,"reasoning":1,"cache":{"read":2,"write":3}},"time":{"created":1700000000002}}"#
+            ],
+        )
+        .unwrap();
+        drop(conn);
+
+        let messages = parse_kilo_sqlite_with_fallback(&db_path, 42);
+        assert_eq!(messages.len(), 2);
+        let legacy = messages
+            .iter()
+            .find(|msg| msg.dedup_key.as_deref() == Some("legacy-1"))
+            .expect("legacy message row");
+        let step = messages
+            .iter()
+            .find(|msg| msg.dedup_key.as_deref() == Some("msg_new"))
+            .expect("session_message step");
+        assert_eq!(legacy.model_id, "gpt-5.4");
+        assert_eq!(legacy.tokens.input, 10);
+        assert_eq!(step.model_id, "claude-sonnet-4-6");
+        assert_eq!(step.tokens.input, 20);
     }
 }

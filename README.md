@@ -1977,9 +1977,9 @@ Mux stores cumulative per-session token usage in `session-usage.json` files. Eac
 
 ### Kilo CLI
 
-Location: `~/.local/share/kilo/kilo.db`
+Location: `~/.local/share/kilo/kilo.db` (other release channels use `kilo-<channel>.db` in the same directory; `KILO_DB` overrides the file)
 
-Kilo CLI stores session data in a SQLite database similar to OpenCode. Each message row contains per-message token breakdowns (input, output, cache read/write, reasoning) with model and provider attribution.
+Current Kilo CLI stores one assistant step per row in `session_message`. The `type` column is `assistant`, and the JSON payload nests the model as `{ "id", "providerID" }` with `tokens.input`, `tokens.output`, `tokens.reasoning`, and `tokens.cache.read` / `tokens.cache.write`. Older databases that still keep those fields on a `message` row (`role`, top-level `modelID`) are read as well.
 
 ### Crush
 

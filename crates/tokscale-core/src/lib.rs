@@ -3292,15 +3292,18 @@ fn parse_all_messages_streaming<S: MessageSink>(
         all_messages.extend(messages);
     }
 
-    // Kilo CLI: SQLite database
-    if let Some(db_path) = &scan_result.kilo_db {
-        let kilo_messages: Vec<UnifiedMessage> = sessions::kilo::parse_kilo_sqlite(db_path)
-            .into_iter()
-            .map(|mut msg| {
-                apply_pricing_if_available(&mut msg, pricing);
-                msg
-            })
-            .collect();
+    // Kilo CLI: SQLite databases. Stable installs use `kilo.db`; other release
+    // channels keep a sibling `kilo-<channel>.db`. `parse_kilo_databases`
+    // collapses a step that was copied into more than one of those files.
+    if !scan_result.kilo_dbs.is_empty() {
+        let kilo_messages: Vec<UnifiedMessage> =
+            sessions::kilo::parse_kilo_databases(&scan_result.kilo_dbs)
+                .into_iter()
+                .map(|mut msg| {
+                    apply_pricing_if_available(&mut msg, pricing);
+                    msg
+                })
+                .collect();
         all_messages.extend(kilo_messages);
     }
 
@@ -6307,12 +6310,13 @@ pub fn parse_local_clients(options: LocalParseOptions) -> Result<ParsedMessages,
     counts.set(ClientId::Fx, fx_count);
     messages.extend(fx_msgs);
 
-    // Kilo CLI: SQLite database
-    let _kilo_count: i32 = if let Some(db_path) = &scan_result.kilo_db {
-        let kilo_msgs: Vec<ParsedMessage> = sessions::kilo::parse_kilo_sqlite(db_path)
-            .into_iter()
-            .map(|msg| unified_to_parsed(&msg))
-            .collect();
+    // Kilo CLI: SQLite databases (stable `kilo.db` plus channel variants).
+    let _kilo_count: i32 = if !scan_result.kilo_dbs.is_empty() {
+        let kilo_msgs: Vec<ParsedMessage> =
+            sessions::kilo::parse_kilo_databases(&scan_result.kilo_dbs)
+                .into_iter()
+                .map(|msg| unified_to_parsed(&msg))
+                .collect();
         let count = summed_parsed_message_count(&kilo_msgs);
         counts.set(ClientId::Kilo, count);
         messages.extend(kilo_msgs);

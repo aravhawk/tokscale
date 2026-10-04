@@ -104,7 +104,13 @@ pub struct ScanResult {
     /// Copilot CLI usage database at `~/.copilot/session-store.db`.
     pub copilot_session_store_db: Option<PathBuf>,
     pub synthetic_db: Option<PathBuf>,
-    pub kilo_db: Option<PathBuf>,
+    /// Kilo CLI SQLite databases under the XDG data dir.
+    ///
+    /// Stable channels use `kilo.db`. Other release channels use
+    /// `kilo-<channel>.db`, falling back to a pre-rename
+    /// `opencode-<channel>.db` in the same directory when the `kilo-` file
+    /// is not there yet. `KILO_DB` is included when it points at a file.
+    pub kilo_dbs: Vec<PathBuf>,
     pub hermes_db: Option<PathBuf>,
     pub goose_db: Option<PathBuf>,
     pub zed_db: Option<PathBuf>,
@@ -145,7 +151,7 @@ impl Default for ScanResult {
             copilot_desktop_db: None,
             copilot_session_store_db: None,
             synthetic_db: None,
-            kilo_db: None,
+            kilo_dbs: Vec::new(),
             hermes_db: None,
             goose_db: None,
             zed_db: None,
@@ -1260,6 +1266,115 @@ fn is_opencode_db_filename(name: &str) -> bool {
         .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
 }
 
+/// Discover Kilo CLI SQLite databases under the kilo data dir.
+///
+/// Matches the names `getChannelPath` in Kilo's `packages/opencode/src/storage/db.ts`
+/// selects:
+/// - `kilo.db` for `latest` / `beta` / `prod` (and when channel databases are disabled)
+/// - `kilo-<channel>.db` for every other release channel
+/// - `opencode-<channel>.db` in the same directory, only when the matching
+///   `kilo-<channel>.db` is not present yet (the pre-rename fallback)
+///
+/// WAL/SHM sidecars (`kilo.db-wal`, `kilo-nightly.db-shm`) are ignored.
+pub(crate) fn discover_kilo_dbs(data_dir: &Path) -> Vec<PathBuf> {
+    let entries = match std::fs::read_dir(data_dir) {
+        Ok(entries) => entries,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut kilo_named = Vec::new();
+    let mut legacy_channel = Vec::new();
+    for entry in entries.filter_map(|entry| entry.ok()) {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if is_kilo_db_filename(name) {
+            kilo_named.push(path);
+        } else if let Some(channel) = kilo_legacy_opencode_channel(name) {
+            legacy_channel.push((channel.to_string(), path));
+        }
+    }
+
+    let kilo_channels: HashSet<String> = kilo_named
+        .iter()
+        .filter_map(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .and_then(kilo_channel_from_filename)
+                .map(str::to_string)
+        })
+        .collect();
+
+    let mut dbs = kilo_named;
+    for (channel, path) in legacy_channel {
+        if !kilo_channels.contains(&channel) {
+            dbs.push(path);
+        }
+    }
+    dbs.sort_unstable();
+    dbs
+}
+
+/// `KILO_DB` overrides the database the CLI opens. `:memory:` is a process-local
+/// database with nothing to scan. Relative paths resolve under the data dir,
+/// matching Kilo's `getPath`.
+fn kilo_db_from_env(data_dir: &Path) -> Option<PathBuf> {
+    let value = std::env::var("KILO_DB").ok()?;
+    let trimmed = value.trim();
+    if trimmed.is_empty() || trimmed == ":memory:" {
+        return None;
+    }
+    let path = PathBuf::from(trimmed);
+    let path = if path.is_absolute() {
+        path
+    } else {
+        data_dir.join(path)
+    };
+    path.is_file().then_some(path)
+}
+
+/// `kilo.db` or `kilo-<channel>.db`, with `<channel>` drawn from the
+/// `[A-Za-z0-9._-]` class Kilo's `getChannelPath` normalizes to.
+fn is_kilo_db_filename(name: &str) -> bool {
+    let stem = match name.strip_suffix(".db") {
+        Some(stem) => stem,
+        None => return false,
+    };
+    if stem == "kilo" {
+        return true;
+    }
+    let Some(channel) = stem.strip_prefix("kilo-") else {
+        return false;
+    };
+    is_kilo_channel_name(channel)
+}
+
+/// Channel suffix of a `kilo-<channel>.db` filename, if it has one.
+fn kilo_channel_from_filename(name: &str) -> Option<&str> {
+    name.strip_suffix(".db")
+        .and_then(|stem| stem.strip_prefix("kilo-"))
+        .filter(|channel| is_kilo_channel_name(channel))
+}
+
+/// Pre-rename channel database: `opencode-<channel>.db` inside the kilo data
+/// dir. Bare `opencode.db` is not a Kilo fallback.
+fn kilo_legacy_opencode_channel(name: &str) -> Option<&str> {
+    let stem = name.strip_suffix(".db")?;
+    let channel = stem.strip_prefix("opencode-")?;
+    is_kilo_channel_name(channel).then_some(channel)
+}
+
+fn is_kilo_channel_name(channel: &str) -> bool {
+    !channel.is_empty()
+        && channel
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+}
+
 /// Discover MiMo Code SQLite databases under the given data directory.
 ///
 /// Matches `mimocode.db` and `mimocode-<channel>.db` (channel names
@@ -1536,11 +1651,12 @@ fn devin_cli_additional_roots(home_dir: &str, use_env_roots: bool) -> Vec<PathBu
 }
 
 fn supports_extra_dir_scanning(client_id: ClientId) -> bool {
-    // Kilo CLI currently loads a single SQLite DB via `scan_result.kilo_db`
-    // Roo/KiloCode require local + remote and server task roots, and Crush
-    // discovers SQLite DBs via the project registry rather than scanned file
-    // paths. Hermes/Zed profile databases are named consistently enough for
-    // `scan_directory` to find them from user-provided roots.
+    // Kilo CLI discovers `kilo.db` and channel variants itself via
+    // `scan_result.kilo_dbs`. Roo/KiloCode require local + remote and server
+    // task roots, and Crush discovers SQLite DBs via the project registry
+    // rather than scanned file paths. Hermes/Zed profile databases are named
+    // consistently enough for `scan_directory` to find them from
+    // user-provided roots.
     !matches!(
         client_id,
         ClientId::Kilo | ClientId::Crush | ClientId::Goose
@@ -2471,9 +2587,17 @@ fn scan_all_clients_with_env_strategy_inner(
         let kilo_db_path = ClientId::Kilo
             .data()
             .resolve_path_with_env_strategy(home_dir, use_env_roots);
-        if std::path::Path::new(&kilo_db_path).exists() {
-            result.kilo_db = Some(PathBuf::from(kilo_db_path));
+        let data_dir = PathBuf::from(&kilo_db_path)
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from(&kilo_db_path));
+        let mut dbs = discover_kilo_dbs(&data_dir);
+        if use_env_roots {
+            if let Some(override_path) = kilo_db_from_env(&data_dir) {
+                dbs.push(override_path);
+            }
         }
+        result.kilo_dbs = dedup_dbs_by_canonical_path(dbs);
     }
 
     if enabled.contains(&ClientId::DevinCli) || enabled.contains(&ClientId::DevinDesktop) {
@@ -4419,6 +4543,73 @@ mod tests {
         assert!(!is_opencode_db_filename("opencode-stable/beta.db"));
         assert!(!is_opencode_db_filename("auth.json"));
         assert!(!is_opencode_db_filename("other.db"));
+    }
+
+    #[test]
+    fn test_is_kilo_db_filename_accepts_default_and_channel_variants() {
+        assert!(is_kilo_db_filename("kilo.db"));
+        assert!(is_kilo_db_filename("kilo-nightly.db"));
+        assert!(is_kilo_db_filename("kilo-dev.db"));
+        assert!(is_kilo_db_filename("kilo-1.2.3.db"));
+        assert!(!is_kilo_db_filename("kilo.db-wal"));
+        assert!(!is_kilo_db_filename("kilo-nightly.db-shm"));
+        assert!(!is_kilo_db_filename("kilo-.db"));
+        assert!(!is_kilo_db_filename("opencode-dev.db"));
+        assert!(!is_kilo_db_filename("auth.json"));
+    }
+
+    #[test]
+    fn test_discover_kilo_dbs_keeps_channel_files_and_legacy_fallback() {
+        let dir = TempDir::new().unwrap();
+        let data = dir.path();
+        fs::write(data.join("kilo.db"), b"").unwrap();
+        fs::write(data.join("kilo-nightly.db"), b"").unwrap();
+        fs::write(data.join("kilo.db-wal"), b"").unwrap();
+        fs::write(data.join("kilo-nightly.db-shm"), b"").unwrap();
+        // Pre-rename fallback is used only when the kilo- channel file is absent.
+        fs::write(data.join("opencode-dev.db"), b"").unwrap();
+        fs::write(data.join("opencode-nightly.db"), b"").unwrap();
+        fs::write(data.join("opencode.db"), b"").unwrap();
+        fs::write(data.join("auth.json"), b"").unwrap();
+
+        let found: Vec<_> = discover_kilo_dbs(data)
+            .into_iter()
+            .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            found,
+            vec![
+                "kilo-nightly.db".to_string(),
+                "kilo.db".to_string(),
+                "opencode-dev.db".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_scan_kilo_discovers_channel_databases_under_home() {
+        let dir = TempDir::new().unwrap();
+        let home = dir.path();
+        let data = home.join(".local/share/kilo");
+        fs::create_dir_all(&data).unwrap();
+        fs::write(data.join("kilo.db"), b"").unwrap();
+        fs::write(data.join("kilo-nightly.db"), b"").unwrap();
+        fs::write(data.join("kilo.db-wal"), b"").unwrap();
+
+        let result = scan_all_clients_with_env_strategy(
+            home.to_str().unwrap(),
+            &["kilo".to_string()],
+            false,
+        );
+        let names: Vec<_> = result
+            .kilo_dbs
+            .iter()
+            .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["kilo-nightly.db".to_string(), "kilo.db".to_string()]
+        );
     }
 
     #[test]
