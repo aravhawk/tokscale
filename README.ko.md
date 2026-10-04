@@ -611,7 +611,7 @@ tokscale autosubmit disable
 
 Cursor IDE 지원은 Cursor의 웹 API 내보내기를 사용하며, Tokscale이 `~/.config/tokscale/cursor-cache/usage*.csv`에 캐싱합니다. Tokscale은 `~/.cursor` 아래의 로컬 Cursor Agent CLI 상태를 파싱하지 않으며, 데스크톱 SQLite DB를 사용량 원장으로 취급하지도 않습니다.
 
-Cursor 데스크톱 앱이 설치되어 있고 로그인되어 있으면, `tokscale cursor login`은 Cursor의 `state.vscdb`에서 `cursorAuth/accessToken`을 우선 읽어 세션 쿠키를 자동으로 만듭니다. `tokscale cursor sync`도 가능할 때 이 토큰을 갱신합니다. 사용량 행은 계속 Cursor usage-export API에서만 가져옵니다.
+Cursor 데스크톱 앱이 설치되어 있고 로그인되어 있으면, tokscale은 리포트·submit·sync 전에 `state.vscdb`의 `cursorAuth/accessToken`을 자동으로 가져옵니다. 데스크톱 세션이 없을 때만 `tokscale cursor login`이 필요합니다. 사용량 행은 계속 Cursor usage-events API에서만 가져오며, 로컬 `~/.cursor` 기록은 파싱하지 않습니다.
 
 설정 (데스크톱 자동 로그인):
 

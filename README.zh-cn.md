@@ -611,7 +611,7 @@ tokscale autosubmit disable
 
 Cursor IDE 通过 Cursor 的网页用量导出 API 获取数据，并缓存在 `~/.config/tokscale/cursor-cache/usage*.csv`。Tokscale **不会**解析 `~/.cursor` 下的 Cursor Agent CLI 本地会话，也不会把桌面端 SQLite 当作用量账本。
 
-若本机已安装并登录 Cursor 桌面端，`tokscale cursor login` 会优先从 Cursor 的 `state.vscdb` 读取 `cursorAuth/accessToken` 并自动构造会话 cookie；`tokscale cursor sync` 在可用时也会刷新该 token。用量数据仍只来自 Cursor 的 usage-export API。
+若本机已安装并登录 Cursor 桌面端，tokscale 会在报告、提交或同步之前自动从 Cursor 的 `state.vscdb` 读取 `cursorAuth/accessToken` 并构造会话 cookie。只有缺少桌面端登录时才需要单独运行 `tokscale cursor login`。用量数据仍只来自 Cursor 的 usage-events API，而不是本地 `~/.cursor` 记录。
 
 设置（桌面端自动登录）：
 

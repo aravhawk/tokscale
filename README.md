@@ -613,7 +613,7 @@ Scheduled runs are non-interactive: they never prompt for GitHub auth or star co
 
 Cursor IDE support uses Cursor's web API export, cached by Tokscale at `~/.config/tokscale/cursor-cache/usage*.csv`. Tokscale does not parse local Cursor Agent CLI state under `~/.cursor`, and it does not treat the desktop SQLite DB as a usage ledger.
 
-When the Cursor desktop app is installed and signed in, `tokscale cursor login` prefers the local `cursorAuth/accessToken` from Cursor's `state.vscdb` and builds the session cookie automatically. `tokscale cursor sync` also refreshes that token when available. Usage rows still come only from Cursor's usage-export API.
+When the Cursor desktop app is installed and signed in, tokscale imports `cursorAuth/accessToken` from Cursor's `state.vscdb` automatically before a report, submit, or sync — a separate `tokscale cursor login` is only needed when that desktop session is missing. Usage rows still come only from Cursor's usage-events API, not from local `~/.cursor` transcripts.
 
 Setup (desktop auto-login):
 
