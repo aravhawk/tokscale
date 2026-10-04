@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -235,28 +235,72 @@ fn build_cursor_json_headers(session_token: &str) -> reqwest::header::HeaderMap 
     headers
 }
 
+/// One parse of an aggregated usage-events document. Invalid JSON is an empty
+/// non-partial document, so a corrupt cache counts as nothing to keep.
+struct CursorUsageDocument {
+    events: Vec<serde_json::Value>,
+    partial: bool,
+}
+
+fn parse_cursor_usage_document(json_text: &str) -> CursorUsageDocument {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(json_text) else {
+        return CursorUsageDocument {
+            events: Vec::new(),
+            partial: false,
+        };
+    };
+    let events = value
+        .get("usageEventsDisplay")
+        .and_then(|events| events.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let partial = value
+        .get("partial")
+        .and_then(|flag| flag.as_bool())
+        .unwrap_or(false);
+    CursorUsageDocument { events, partial }
+}
+
 /// Count events in an aggregated usage-events JSON document. Invalid JSON or a
 /// missing `usageEventsDisplay` array counts as zero.
 fn count_cursor_json_events(json_text: &str) -> usize {
-    serde_json::from_str::<serde_json::Value>(json_text)
-        .ok()
-        .and_then(|value| {
-            value
-                .get("usageEventsDisplay")
-                .and_then(|events| events.as_array())
-                .map(|events| events.len())
-        })
-        .unwrap_or(0)
+    parse_cursor_usage_document(json_text).events.len()
 }
 
 /// A fetch that ran out of time after collecting some pages is marked
-/// `partial` so a later sync can replace it, and so it never overwrites a
-/// larger cache or a legacy CSV export.
+/// `partial`. A partial result is unioned with an existing JSON cache rather
+/// than replacing it, and it never archives a legacy CSV export.
 fn cursor_usage_json_is_partial(json_text: &str) -> bool {
-    serde_json::from_str::<serde_json::Value>(json_text)
-        .ok()
-        .and_then(|value| value.get("partial").and_then(|flag| flag.as_bool()))
-        .unwrap_or(false)
+    parse_cursor_usage_document(json_text).partial
+}
+
+/// Union two usage-event lists. Identity is the event object itself, so a
+/// partial page that overlaps the cache does not double-count, and events that
+/// page never reached stay in the result.
+fn merge_cursor_usage_events(
+    existing: &[serde_json::Value],
+    incoming: &[serde_json::Value],
+) -> Vec<serde_json::Value> {
+    let mut seen = HashSet::with_capacity(existing.len().saturating_add(incoming.len()));
+    let mut merged = Vec::with_capacity(existing.len().saturating_add(incoming.len()));
+    for event in existing.iter().chain(incoming.iter()) {
+        let Ok(key) = serde_json::to_string(event) else {
+            merged.push(event.clone());
+            continue;
+        };
+        if seen.insert(key) {
+            merged.push(event.clone());
+        }
+    }
+    merged
+}
+
+fn error_is_reqwest_timeout(err: &anyhow::Error) -> bool {
+    err.chain().any(|cause| {
+        cause
+            .downcast_ref::<reqwest::Error>()
+            .is_some_and(|reqwest_err| reqwest_err.is_timeout())
+    })
 }
 
 fn aggregated_usage_events(events: Vec<serde_json::Value>, partial: bool) -> Result<String> {
@@ -1328,7 +1372,11 @@ async fn fetch_cursor_usage_events_json_from(
         };
         let text = match read_cursor_body_with_cap(response, remaining, "usage events JSON").await {
             Ok(text) => text,
-            Err(_) if !all_events.is_empty() => {
+            // A hung later page is the only body failure that should keep the
+            // pages already collected. A byte-cap refusal or a dropped
+            // connection has to stay an error, or every sync looks like a
+            // benign partial cache and the real diagnostic never surfaces.
+            Err(err) if !all_events.is_empty() && error_is_reqwest_timeout(&err) => {
                 return aggregated_usage_events(all_events, true);
             }
             Err(err) => return Err(err),
@@ -1524,15 +1572,14 @@ where
                     ))
                 };
 
-                let event_count = count_cursor_json_events(&json_text);
+                let incoming = parse_cursor_usage_document(&json_text);
                 let legacy_csv = file_path.with_extension("csv");
-                let partial = cursor_usage_json_is_partial(&json_text);
 
                 // A zero-event result is suspicious once cached history exists:
                 // overwriting `usage.json` with nothing and archiving the legacy
                 // CSV would strip real usage from reports. Keep both caches intact
                 // and record it so the next sync can recover instead.
-                if event_count == 0 && (file_path.exists() || legacy_csv.exists()) {
+                if incoming.events.is_empty() && (file_path.exists() || legacy_csv.exists()) {
                     errors.push(format!(
                         "{}: sync returned zero events; keeping existing cache",
                         account_id
@@ -1540,30 +1587,44 @@ where
                     continue;
                 }
 
-                // A timed-out walk is marked partial. It must not replace a
-                // larger cache or a legacy CSV (the full pre-migration export),
-                // and it must not archive that CSV. A first-time partial still
-                // writes, so the report shows the events already collected
-                // instead of zero usage until a later sync finishes.
-                if partial && legacy_csv.exists() {
+                // A timed-out walk is marked partial. It must not archive a
+                // legacy CSV (the full pre-migration export). When JSON already
+                // exists, union the partial page with it: a longer partial can
+                // still omit older rows, and replacing by count would drop
+                // them. A partial that adds nothing leaves the file untouched.
+                // A first-time partial still writes, so the report shows the
+                // events already collected instead of zero usage.
+                let (event_count, stored) = if incoming.partial
+                    && legacy_csv.exists()
+                    && !file_path.exists()
+                {
                     errors.push(format!(
-                        "{account_id}: sync hit its time budget before the full history was collected; keeping existing cache"
-                    ));
-                    continue;
-                }
-                if partial && file_path.exists() {
-                    let existing = fs::read_to_string(&file_path)
-                        .map(|text| count_cursor_json_events(&text))
-                        .unwrap_or(0);
-                    if event_count <= existing {
-                        errors.push(format!(
                             "{account_id}: sync hit its time budget before the full history was collected; keeping existing cache"
                         ));
+                    continue;
+                } else if incoming.partial && file_path.exists() {
+                    let existing_text = fs::read_to_string(&file_path).unwrap_or_default();
+                    let existing = parse_cursor_usage_document(&existing_text);
+                    let merged = merge_cursor_usage_events(&existing.events, &incoming.events);
+                    if merged.len() <= existing.events.len() {
+                        errors.push(format!(
+                                "{account_id}: sync hit its time budget before the full history was collected; keeping existing cache"
+                            ));
                         continue;
                     }
-                }
+                    let event_count = merged.len();
+                    match aggregated_usage_events(merged, true) {
+                        Ok(text) => (event_count, text),
+                        Err(e) => {
+                            errors.push(format!("{account_id}: {e}"));
+                            continue;
+                        }
+                    }
+                } else {
+                    (incoming.events.len(), json_text)
+                };
 
-                if let Err(e) = atomic_write_file(&file_path, &json_text) {
+                if let Err(e) = atomic_write_file(&file_path, &stored) {
                     errors.push(format!("{}: {}", account_id, e));
                 } else {
                     total_rows += event_count;
@@ -2425,6 +2486,39 @@ mod tests {
     }
 
     #[test]
+    fn test_usage_events_json_later_page_over_the_cap_is_an_error() {
+        // Page 1 fits. Page 2 blows the remaining byte budget. That refusal
+        // must stay an error: folding it into a partial success would hide
+        // the byte-limit diagnostic and cache a history that can never finish.
+        let page1 = json_page(2, &[&json_event("c1", "1788171994001")]);
+        let mut page2 = b"{\"usageEventsDisplay\":[".to_vec();
+        while page2.len() < 8 * 1024 {
+            page2.extend_from_slice(br#"{"conversationId":"x","timestamp":"2","model":"m"},"#);
+        }
+        let cap = page1.len() + 512;
+        let (url, _requests) = serve_json_pages(vec![
+            (format!("Content-Length: {}\r\n", page1.len()), page1),
+            (String::new(), page2),
+        ]);
+
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let err = runtime
+            .block_on(fetch_cursor_usage_events_json_from(
+                &url,
+                "session-token",
+                None,
+                cap,
+                1,
+            ))
+            .expect_err("a later page past the byte ceiling must stay an error");
+        let message = format!("{err:#}");
+        assert!(
+            message.contains("byte limit"),
+            "the byte-limit diagnostic must stay visible: {message}"
+        );
+    }
+
+    #[test]
     fn test_usage_events_json_walks_all_pages() {
         // page_size 2, total 5: two full pages then a short final page.
         let (url, requests) = serve_json_pages(vec![
@@ -2997,7 +3091,7 @@ mod tests {
     }
 
     #[test]
-    fn test_sync_keeps_larger_cache_when_partial_fetch_is_shorter() -> Result<()> {
+    fn test_sync_merges_partial_fetch_without_dropping_cached_events() -> Result<()> {
         let temp_dir = TempDir::new()?;
         let mut accounts = HashMap::new();
         accounts.insert(
@@ -3024,7 +3118,64 @@ mod tests {
         let seeded = r#"{"usageEventsDisplay":[{"conversationId":"keep","timestamp":"1","model":"gpt-5","chargedCents":1},{"conversationId":"keep2","timestamp":"2","model":"gpt-5","chargedCents":2}]}"#;
         fs::write(cache_dir.join("usage.json"), seeded)?;
 
-        let partial = r#"{"partial":true,"usageEventsDisplay":[{"conversationId":"new","timestamp":"3","model":"gpt-5","chargedCents":1}]}"#;
+        // More rows than the cache, but none of the cached conversations. A
+        // count-only replace would drop keep and keep2.
+        let partial = r#"{"partial":true,"usageEventsDisplay":[{"conversationId":"new","timestamp":"3","model":"gpt-5","chargedCents":1},{"conversationId":"keep2","timestamp":"2","model":"gpt-5","chargedCents":2},{"conversationId":"newer","timestamp":"4","model":"gpt-5","chargedCents":4}]}"#;
+        let runtime = tokio::runtime::Runtime::new()?;
+        let result = runtime.block_on(sync_cursor_cache_with_fetcher_in_home(
+            temp_dir.path(),
+            |_session_token| {
+                let partial = partial.to_string();
+                async move { Ok(partial) }
+            },
+        ));
+
+        assert!(result.synced, "a partial that adds rows must be stored");
+        assert_eq!(result.rows, 4);
+        let stored = fs::read_to_string(cache_dir.join("usage.json"))?;
+        assert!(cursor_usage_json_is_partial(&stored));
+        assert_eq!(count_cursor_json_events(&stored), 4);
+        assert!(
+            stored.contains("\"conversationId\":\"keep\""),
+            "cached events the partial never reached must survive: {stored}"
+        );
+        assert_eq!(
+            stored.matches("\"conversationId\":\"keep2\"").count(),
+            1,
+            "an overlapping event must not be stored twice: {stored}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_sync_partial_subset_leaves_existing_cache_untouched() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let mut accounts = HashMap::new();
+        accounts.insert(
+            "active-account".to_string(),
+            CursorCredentials {
+                session_token: "token-active".to_string(),
+                user_id: Some("active-account".to_string()),
+                created_at: "2026-01-01T00:00:00Z".to_string(),
+                expires_at: None,
+                label: Some("work".to_string()),
+            },
+        );
+        save_credentials_store_in_home(
+            temp_dir.path(),
+            &CursorCredentialsStore {
+                version: 1,
+                active_account_id: "active-account".to_string(),
+                accounts,
+            },
+        )?;
+
+        let cache_dir = cursor_cache_dir(temp_dir.path());
+        fs::create_dir_all(&cache_dir)?;
+        let seeded = r#"{"usageEventsDisplay":[{"conversationId":"keep","timestamp":"1","model":"gpt-5","chargedCents":1},{"conversationId":"keep2","timestamp":"2","model":"gpt-5","chargedCents":2}]}"#;
+        fs::write(cache_dir.join("usage.json"), seeded)?;
+
+        let partial = r#"{"partial":true,"usageEventsDisplay":[{"conversationId":"keep","timestamp":"1","model":"gpt-5","chargedCents":1}]}"#;
         let runtime = tokio::runtime::Runtime::new()?;
         let result = runtime.block_on(sync_cursor_cache_with_fetcher_in_home(
             temp_dir.path(),
@@ -3038,7 +3189,7 @@ mod tests {
         assert_eq!(
             fs::read_to_string(cache_dir.join("usage.json"))?,
             seeded,
-            "a shorter partial sync must not shrink the cache"
+            "a partial that adds no rows must not rewrite the cache"
         );
         Ok(())
     }

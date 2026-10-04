@@ -411,7 +411,7 @@ tokscale --client opencode,claude
 # 重复使用：效果相同（与 shell 别名搭配使用很方便）
 tokscale -c opencode -c claude
 
-# Cursor IDE 需要先运行 `tokscale cursor login`
+# Cursor IDE 使用 Tokscale 的 API 缓存；尚未保存登录时会导入桌面端会话
 tokscale --client cursor
 
 # Synthetic（synthetic.new）从其他 agent 会话中检测
@@ -611,13 +611,13 @@ tokscale autosubmit disable
 
 Cursor IDE 通过 Cursor 的网页用量导出 API 获取数据，并缓存在 `~/.config/tokscale/cursor-cache/usage*.csv`。Tokscale **不会**解析 `~/.cursor` 下的 Cursor Agent CLI 本地会话，也不会把桌面端 SQLite 当作用量账本。
 
-若本机已安装并登录 Cursor 桌面端，tokscale 会在报告、提交或同步之前自动从 Cursor 的 `state.vscdb` 读取 `cursorAuth/accessToken` 并构造会话 cookie。只有缺少桌面端登录时才需要单独运行 `tokscale cursor login`。用量数据仍只来自 Cursor 的 usage-events API，而不是本地 `~/.cursor` 记录。
+本机已安装并登录 Cursor 桌面端时，如果 tokscale 还没有已保存的 Cursor 登录，报告、提交或 `tokscale cursor sync` 会在同步前从 `state.vscdb` 导入 `cursorAuth/accessToken`。已保存的登录保持不变。用量缓存仍新鲜时，报告会跳过同步，因此新登录的桌面账号不会自行替换该登录或一份新鲜缓存。只有缺少桌面端会话时才需要 `tokscale cursor login`。用量数据仍只来自 Cursor 的 usage-events API，而不是本地 `~/.cursor` 记录。
 
 设置（桌面端自动登录）：
 
 1. 登录 Cursor 桌面端。
-2. 运行 `tokscale cursor login --name work`（有本地桌面会话时会自动检测）。
-3. 运行 `tokscale cursor sync --json`，填充 `~/.config/tokscale/cursor-cache/usage.csv`。
+2. 可选：运行 `tokscale cursor login --name work`，把该桌面会话保存为一个名称。尚未保存 Cursor 登录时，报告、提交和同步会自动导入它。
+3. 可选：运行 `tokscale cursor sync --json`，立即刷新 `~/.config/tokscale/cursor-cache/usage.json`。缓存过期时，报告自己会同步。
 4. 运行 `tokscale --client cursor` 或任意报告命令。
 
 回退（手动粘贴浏览器 cookie）：桌面端不可用时：

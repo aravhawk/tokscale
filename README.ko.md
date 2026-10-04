@@ -410,7 +410,7 @@ tokscale --client opencode,claude
 # 반복: 같은 효과 (쉘 alias와 함께 쓰기 좋음)
 tokscale -c opencode -c claude
 
-# Cursor IDE는 Tokscale의 API 캐시를 사용; 먼저 login + sync --json 실행
+# Cursor IDE는 Tokscale의 API 캐시를 사용; 저장된 로그인이 없으면 데스크톱 세션을 가져옴
 tokscale --client cursor
 
 # Synthetic (synthetic.new) 은 다른 에이전트 세션에서 검출됨
@@ -611,13 +611,13 @@ tokscale autosubmit disable
 
 Cursor IDE 지원은 Cursor의 웹 API 내보내기를 사용하며, Tokscale이 `~/.config/tokscale/cursor-cache/usage*.csv`에 캐싱합니다. Tokscale은 `~/.cursor` 아래의 로컬 Cursor Agent CLI 상태를 파싱하지 않으며, 데스크톱 SQLite DB를 사용량 원장으로 취급하지도 않습니다.
 
-Cursor 데스크톱 앱이 설치되어 있고 로그인되어 있으면, tokscale은 리포트·submit·sync 전에 `state.vscdb`의 `cursorAuth/accessToken`을 자동으로 가져옵니다. 데스크톱 세션이 없을 때만 `tokscale cursor login`이 필요합니다. 사용량 행은 계속 Cursor usage-events API에서만 가져오며, 로컬 `~/.cursor` 기록은 파싱하지 않습니다.
+Cursor 데스크톱 앱이 설치되어 있고 로그인되어 있어도, tokscale에 저장된 Cursor 로그인이 이미 있으면 그 로그인을 쓰고 데스크톱 토큰은 가져오지 않습니다. 저장된 로그인이 없을 때만 리포트, submit, `tokscale cursor sync` 전에 `state.vscdb`의 `cursorAuth/accessToken`을 가져옵니다. 사용량 캐시가 아직 신선하면 리포트는 동기화를 건너뛰므로, 데스크톱에서 새로 로그인한 계정이 그 로그인이나 신선한 캐시를 스스로 바꾸지는 않습니다. 데스크톱 세션이 없을 때만 `tokscale cursor login`이 필요합니다. 사용량 행은 계속 Cursor usage-events API에서만 가져오며, 로컬 `~/.cursor` 기록은 파싱하지 않습니다.
 
 설정 (데스크톱 자동 로그인):
 
 1. Cursor 데스크톱 앱에 로그인하세요.
-2. `tokscale cursor login --name work`를 실행하세요 (로컬 데스크톱 세션이 있으면 자동 감지).
-3. `tokscale cursor sync --json`을 실행해 `~/.config/tokscale/cursor-cache/usage.csv`를 채우세요.
+2. 선택: `tokscale cursor login --name work`를 실행해 그 데스크톱 세션을 이름으로 저장하세요. 저장된 Cursor 로그인이 아직 없으면 리포트, submit, sync가 자동으로 가져옵니다.
+3. 선택: `tokscale cursor sync --json`을 실행해 `~/.config/tokscale/cursor-cache/usage.json`을 지금 새로 고치세요. 캐시가 오래되면 리포트가 직접 동기화합니다.
 4. `tokscale --client cursor` 또는 아무 리포트 명령을 실행하세요.
 
 대체 방법 (브라우저 쿠키 수동 붙여넣기) — 데스크톱 로그인을 쓸 수 없을 때:
