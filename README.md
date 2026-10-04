@@ -611,7 +611,7 @@ Scheduled runs are non-interactive: they never prompt for GitHub auth or star co
 
 ### Cursor IDE Commands
 
-Cursor IDE support uses Cursor's web API export, cached by Tokscale at `~/.config/tokscale/cursor-cache/usage*.csv`. Tokscale does not parse local Cursor Agent CLI state under `~/.cursor`, and it does not treat the desktop SQLite DB as a usage ledger.
+Cursor IDE support uses Cursor's usage-events API. Tokscale caches that export at `~/.config/tokscale/cursor-cache/usage.json` for the active account and `usage.<account>.json` for each other account. A legacy `usage.csv` from older versions is still read, and a complete sync moves it to `cursor-cache/archive/` so it is not counted beside the JSON. Tokscale does not parse local Cursor Agent CLI state under `~/.cursor`, and it does not treat the desktop SQLite DB as a usage ledger.
 
 When the Cursor desktop app is installed and signed in, and tokscale does not already have a saved Cursor login, a report, submit, or `tokscale cursor sync` imports `cursorAuth/accessToken` from `state.vscdb` before syncing. A saved login is left unchanged. A report also skips syncing while the usage cache is still fresh, so a newly signed-in desktop account does not replace that login or a fresh cache on its own. `tokscale cursor login` is only needed when the desktop session is missing. Usage rows still come only from Cursor's usage-events API, not from local `~/.cursor` transcripts.
 
@@ -647,7 +647,7 @@ tokscale cursor accounts
 # Manually refresh cached Cursor usage
 tokscale cursor sync --json
 
-# Switch active account (controls which account syncs to cursor-cache/usage.csv)
+# Switch active account (controls which account syncs to cursor-cache/usage.json)
 tokscale cursor switch work
 
 # Logout from a specific account (keeps history; excludes it from aggregation)
@@ -663,7 +663,7 @@ tokscale cursor logout --all
 tokscale cursor logout --all --purge-cache
 ```
 
-By default, Tokscale aggregates usage across all saved Cursor accounts by reading `cursor-cache/usage*.csv`. The active account syncs to `usage.csv`; additional accounts sync to `usage.<account>.csv`.
+By default, Tokscale aggregates usage across all saved Cursor accounts by reading `cursor-cache/usage*.json`. The active account syncs to `usage.json`; additional accounts sync to `usage.<account>.json`. A legacy `usage*.csv` is still included until a complete sync archives it.
 
 When you log out, Tokscale moves cached usage to `cursor-cache/archive/` so it is no longer aggregated. Use `--purge-cache` to delete cached usage instead.
 

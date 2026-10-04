@@ -613,7 +613,7 @@ tokscale autosubmit disable
 
 ### Cursor IDEコマンド
 
-Cursor IDE は Cursor のウェブ用量エクスポート API を使い、Tokscale が `~/.config/tokscale/cursor-cache/usage*.csv` にキャッシュします。Tokscale は `~/.cursor` 配下の Cursor Agent CLI ローカル状態を解析しません。また、デスクトップの SQLite DB を使用量台帳としては扱いません。
+Cursor IDE は Cursor の usage-events API を使います。Tokscale はアクティブアカウントを `~/.config/tokscale/cursor-cache/usage.json` に、その他のアカウントを `usage.<account>.json` にキャッシュします。古いバージョンの `usage.csv` は引き続き読み、完全な同期が終わると `cursor-cache/archive/` に移して JSON と二重に数えません。Tokscale は `~/.cursor` 配下の Cursor Agent CLI ローカル状態を解析しません。また、デスクトップの SQLite DB を使用量台帳としては扱いません。
 
 Cursor デスクトップアプリがインストール済みでサインイン済みでも、Tokscale に保存済みの Cursor ログインがある場合はそのログインを使い、デスクトップのトークンは取り込みません。保存済みログインがないときだけ、レポート、submit、`tokscale cursor sync` の前に `state.vscdb` の `cursorAuth/accessToken` を取り込みます。レポートは用量キャッシュが新しいあいだ同期をスキップするので、デスクトップで別アカウントにサインインしても、保存済みログインや新しいキャッシュはそのまま残ります。デスクトップのセッションがないときだけ `tokscale cursor login` が必要です。使用量行は引き続き Cursor の usage-events API からのみ取得し、ローカルの `~/.cursor` トランスクリプトは解析しません。
 
@@ -646,7 +646,7 @@ tokscale cursor accounts
 # キャッシュされたCursor使用量を手動で更新
 tokscale cursor sync --json
 
-# アクティブアカウントを切り替え（cursor-cache/usage.csvに同期されるアカウント）
+# アクティブアカウントを切り替え（cursor-cache/usage.json に同期されるアカウント）
 tokscale cursor switch work
 
 # 特定アカウントからログアウト（履歴は保持、集計から除外）
@@ -662,9 +662,9 @@ tokscale cursor logout --all
 tokscale cursor logout --all --purge-cache
 ```
 
-**資格情報の保存**: Cursorアカウントは`~/.config/tokscale/cursor-credentials.json`に保存されます。使用量データは`~/.config/tokscale/cursor-cache/`にキャッシュされます（アクティブアカウントは`usage.csv`、追加アカウントは`usage.<account>.csv`）。
+**資格情報の保存**: Cursorアカウントは`~/.config/tokscale/cursor-credentials.json`に保存されます。使用量データは`~/.config/tokscale/cursor-cache/`にキャッシュされます（アクティブアカウントは`usage.json`、追加アカウントは`usage.<account>.json`）。
 
-デフォルトでは、tokscale は **保存済みのすべての Cursor アカウントの使用量を合算**します（`cursor-cache/usage*.csv`）。後方互換のため、アクティブアカウントは `cursor-cache/usage.csv` に同期されます。
+デフォルトでは、tokscale は **保存済みのすべての Cursor アカウントの使用量を合算**します（`cursor-cache/usage*.json`）。アクティブアカウントは `usage.json` に、追加アカウントは `usage.<account>.json` に同期されます。古い `usage*.csv` は、完全な同期がそれをアーカイブするまで集計に含まれます。
 
 ログアウト時はキャッシュされた履歴を `cursor-cache/archive/` に移動して保持します（そのため集計には含まれません）。完全に削除したい場合は `--purge-cache` を使ってください。
 
