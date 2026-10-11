@@ -291,7 +291,7 @@ tokscale models --json > report.json   # 파일로 저장
 - **키보드 내비게이션**:
   - `←/→/Tab/BackTab`: 뷰 전환
   - `↑/↓` 또는 `Home/End`: 목록 탐색
-  - `Enter`: 일별 상세 보기 (Daily 탭) / 그래프 셀 선택 (Stats 탭)
+  - `Enter`: 일별 상세 보기 (Daily 탭) / ms/1K 및 Cost/1M 일별 추이 (Models 탭) / 그래프 셀 선택 (Stats 탭)
   - `Esc` 또는 `Backspace`: 다이얼로그 닫기 / 상세 보기 나가기
   - `c/d/t`: 비용/날짜/토큰별 정렬
   - `j`: 오늘로 이동

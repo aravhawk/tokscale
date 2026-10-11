@@ -218,7 +218,10 @@ fn workspace_label(model: &crate::tui::data::ModelUsage) -> &str {
         .unwrap_or("Unknown workspace")
 }
 
-fn model_display_name(model: &crate::tui::data::ModelUsage, group_by: &GroupBy) -> String {
+pub(super) fn model_display_name(
+    model: &crate::tui::data::ModelUsage,
+    group_by: &GroupBy,
+) -> String {
     if *group_by == GroupBy::WorkspaceModel {
         format!("{} / {}", workspace_label(model), model.model)
     } else {
@@ -227,6 +230,11 @@ fn model_display_name(model: &crate::tui::data::ModelUsage, group_by: &GroupBy) 
 }
 
 pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
+    if app.is_model_trend_active() {
+        super::model_trend::render(frame, app, area);
+        return;
+    }
+
     let lang = app.settings.tui_language;
     let block = Block::default()
         .borders(Borders::ALL)
@@ -712,6 +720,8 @@ mod tests {
             cost: 5367.48,
             performance: Default::default(),
             session_count: 1,
+            group_key: String::new(),
+            daily: Vec::new(),
         }];
 
         let backend = TestBackend::new(width, 8);
@@ -795,6 +805,8 @@ mod tests {
             cost: 12.5,
             performance: Default::default(),
             session_count: 1,
+            group_key: String::new(),
+            daily: Vec::new(),
         }];
         app
     }

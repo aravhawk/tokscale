@@ -292,7 +292,7 @@ tokscale models --json > report.json   # 保存到文件
 - **键盘导航**：
   - `←/→/Tab/BackTab`：切换视图
   - `↑/↓` 或 `Home/End`：导航列表
-  - `Enter`：打开每日详情（Daily 标签）/ 选择图表单元格（Stats 标签）
+  - `Enter`：打开每日详情（Daily 标签）/ 含 ms/1K 与 Cost/1M 的每日趋势（Models 标签）/ 选择图表单元格（Stats 标签）
   - `Esc` 或 `Backspace`：关闭对话框 / 退出详情视图
   - `c/d/t`：按成本/日期/Token 排序
   - `j`：跳转到今天

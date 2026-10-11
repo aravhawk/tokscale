@@ -10,6 +10,7 @@ pub(crate) mod header_budget;
 mod hourly;
 mod hourly_profile;
 mod minutely;
+mod model_trend;
 mod models;
 mod monthly;
 mod overview;

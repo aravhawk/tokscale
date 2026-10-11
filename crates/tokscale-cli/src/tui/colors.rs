@@ -154,6 +154,8 @@ mod tests {
             cost,
             performance: Default::default(),
             session_count: 1,
+            group_key: String::new(),
+            daily: Vec::new(),
         }
     }
 

@@ -1082,6 +1082,13 @@ pub fn parser_generation() -> u64 {
             acc = acc.wrapping_mul(FNV_PRIME);
         }
     }
+    // Claude's retention-preserving rebuilds do not bump its source-cache
+    // version: doing so would discard compacted history. Derived totals must
+    // still refresh when those live transcripts are reparsed.
+    for byte in CLAUDE_RETAINED_PARSE_GENERATION.to_le_bytes() {
+        acc ^= u64::from(byte);
+        acc = acc.wrapping_mul(FNV_PRIME);
+    }
     acc
 }
 
@@ -1182,14 +1189,16 @@ const SHARED_PARSER_FAMILIES: &[SharedParserFamily] = &[
         members: &[
             (ClientId::RooCode, 0),
             (ClientId::KiloCode, 0),
-            // +2 for Cline's independent history. v1->v2: standalone Cline
+            // +3 for Cline's independent history. v1->v2: standalone Cline
             // messages subtract cache buckets from gross input tokens,
             // reject non-finite costs, and preserve zero-cost reports.
             // v2->v3: content-aware Cline CLI turn-start classification
             // now recognizes user tool-result records as continuations
             // instead of beginning a new turn, so cached turns must be
             // reparsed.
-            (ClientId::Cline, 2),
+            // v4->v5: clamp CLI input after signed cache subtraction so warm
+            // sources cannot replay negative tokens into submission totals.
+            (ClientId::Cline, 3),
         ],
     },
     SharedParserFamily {
@@ -1335,7 +1344,13 @@ fn parser_version(client: ClientId) -> u32 {
         // so it could land without another bump.
         // v10->v11: standalone `task_started` events reset duration anchors so
         // resumed turns cannot inherit the idle gap from a previous turn.
-        ClientId::Codex => 11,
+        // v11->v12: retain own-activity and supported-usage flags so a warm
+        // scan can diagnose active rollouts with no ledger, including zero
+        // counters and appended usage that clears the diagnostic.
+        // v12->v13: also retain gateway activity for Synthetic-only scans.
+        // v13->v14: support zstd-compressed transcripts (`.jsonl.zst`) in
+        // Codex sessions and archives.
+        ClientId::Codex => 14,
         // v4->v5: jcode's assistant-message timestamp is now back-calculated
         // to the turn start (timestamp - tool_duration_ms) instead of using
         // the recorded (end-anchored) timestamp directly. Follow-up to #890.
@@ -1405,12 +1420,10 @@ fn parser_version(client: ClientId) -> u32 {
         // an invalidation debt forward, and a further bump would have had
         // nothing to invalidate.
         ClientId::OpenCodeReview => 3,
-        // Kiro's structured messages.jsonl turns now back-calculate the
-        // start anchor from `turn_end - elapsedTime` when the user prompt's
-        // own timestamp is missing/unparseable, instead of falling through
-        // to the (end-anchored) turn_end timestamp. Second-round follow-up
-        // to #890.
-        ClientId::Kiro => 2,
+        // v3 assigns CLI metering credits per turn instead of putting the
+        // conversation sum on the first message. Reparse unchanged sources
+        // so cached Unknown costs cannot be token-priced a second time.
+        ClientId::Kiro => 3,
         // Kimi v2 checks token buckets without an overflowing sum. v2->v3:
         // symbolic usage-record models now resolve from the latest llm.request.
         // v3->v4: non-positive wire timestamps (kimi-cli `timestamp`,
@@ -1559,7 +1572,9 @@ fn parser_version(client: ClientId) -> u32 {
         ClientId::CherryStudio => 2,
         ClientId::Mcode => 1,
         ClientId::LmStudio => 1,
-        ClientId::Hindsight => 1,
+        // v1->v2: split cache-inclusive Hindsight input before pricing. Unchanged
+        // monthly ledgers must not replay the old double-counted buckets.
+        ClientId::Hindsight => 2,
         // v2 preserves actual provider identity; v3 clears stale provider
         // metadata when a persisted reset/sentinel snapshot removes it.
         ClientId::Muse => 3,
@@ -1642,10 +1657,14 @@ struct CacheShardKey {
 /// [`CachedSourceEntry::needs_retention_provenance_migration`]) or re-parses
 /// every Claude transcript on every scan forever.
 ///
-/// `usize::MAX` is never a real message index, so appending it records
-/// "provenance is present, retained set may be empty" without changing the
-/// serialized layout.
-const CLAUDE_RETENTION_PROVENANCE_MARKER: usize = usize::MAX;
+/// The marker also versions retention-preserving parser rebuilds. Generation 2
+/// reads advisor iterations that generation 1 ignored. The old marker forces
+/// one live reparse through the retaining loader, preserving compacted turns
+/// rather than evicting the whole source cache with a parser-version bump.
+/// Neither marker is a real message index; the serialized layout is unchanged.
+const CLAUDE_RETAINED_PARSE_GENERATION: u32 = 2;
+const CLAUDE_RETENTION_PROVENANCE_MARKER: usize =
+    usize::MAX - (CLAUDE_RETAINED_PARSE_GENERATION as usize - 1);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct CachedSourceEntry {
@@ -2320,14 +2339,15 @@ impl CachedSourceEntry {
         self.parser_namespace == ClientId::Claude.as_str()
     }
 
-    /// Whether this Claude entry predates retention provenance.
+    /// Whether this Claude entry needs a retention-preserving parser rebuild.
     ///
     /// Entries written before the provenance marker existed carry retained
     /// turns mixed in with live ones and no way to tell them apart, so reading
     /// one as-is presents a stale copy of a response as if the live transcript
     /// still contained it. The reader rebuilds those entries once (see
     /// `lib.rs`), which re-derives the retained set from the live bytes and
-    /// writes the marker, and this then reports `false` forever after.
+    /// writes the current marker, and this then reports `false` until another
+    /// retention-preserving parser generation is introduced.
     ///
     /// The distinction has to survive on disk, and it cannot be a new struct
     /// field: `CachedSourceEntry` is bincode-encoded without field names, so
@@ -4265,22 +4285,282 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
+    fn hindsight_v1_shards_reparse_cache_inclusive_usage() {
+        let temp_home = TempDir::new().unwrap();
+        let _cache_env = sandbox_cache_env(temp_home.path());
+        let source_root = TempDir::new().unwrap();
+        let source = source_root.path().join("2026-09.jsonl");
+        std::fs::write(
+            &source,
+            br#"{"id":"cached-request","provider":"openai","model":"gpt-test","started_at":"2026-09-01T08:16:51Z","input_tokens":100,"output_tokens":20,"cached_tokens":40}"#,
+        )
+        .unwrap();
+        let current_identity = CacheIdentity::for_client(ClientId::Hindsight);
+        let stale_identity = CacheIdentity {
+            namespace: current_identity.namespace,
+            parser_version: 1,
+        };
+        let fingerprint = SourceFingerprint::from_path(&source).unwrap();
+        let rebuilt = crate::sessions::hindsight::parse_hindsight_file(&source);
+        let mut stale_messages = rebuilt.clone();
+        stale_messages[0].tokens.input = 100;
+        let stale_entry = CachedSourceEntry::new(
+            stale_identity,
+            &source,
+            fingerprint.clone(),
+            stale_messages,
+            Vec::new(),
+            None,
+        );
+        let stale_path = cache_shard_path(current_identity, &source);
+        ensure_cache_dir(stale_path.parent().unwrap()).unwrap();
+        write_shard_with_limit(
+            &stale_path,
+            stale_identity,
+            &[stale_entry],
+            MAX_CACHE_SHARD_BYTES,
+        )
+        .unwrap();
+
+        let mut cache = SourceMessageCache::load();
+        assert!(
+            cache.get(current_identity, &source).is_none(),
+            "v1 cache must not keep double-counted input for an unchanged ledger"
+        );
+        assert_eq!(rebuilt[0].tokens.input, 60);
+        assert_eq!(rebuilt[0].tokens.total(), 120);
+        cache.insert(CachedSourceEntry::new(
+            current_identity,
+            &source,
+            fingerprint,
+            rebuilt.clone(),
+            Vec::new(),
+            None,
+        ));
+        cache.save_if_dirty();
+        let warm = SourceMessageCache::load();
+        let cached = warm.get(current_identity, &source).unwrap();
+        assert_eq!(cached.messages, rebuilt);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn advisor_usage_rebuilds_warm_claude_and_mirror_caches_without_losing_history() {
+        use std::sync::atomic::Ordering::Relaxed;
+        for mirror in [false, true] {
+            let cache_home = TempDir::new().unwrap();
+            let _env = sandbox_cache_env(cache_home.path());
+            let source_home = TempDir::new().unwrap();
+            let config = if mirror {
+                let variant = source_home.path().join(".cc-mirror/anthropic-mirror");
+                let config = variant.join("config");
+                std::fs::create_dir_all(&variant).unwrap();
+                std::fs::write(
+                    variant.join("variant.json"),
+                    serde_json::json!({
+                        "name": "anthropic-mirror", "provider": "anthropic", "configDir": config
+                    })
+                    .to_string(),
+                )
+                .unwrap();
+                config
+            } else {
+                source_home.path().join(".claude")
+            };
+            let source = config.join("projects/repro/live.jsonl");
+            std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+            let record = r#"{"type":"assistant","timestamp":"2026-10-02T20:10:51.000Z","requestId":"req_adv","message":{"id":"msg_adv","model":"claude-opus-5-5","usage":{"input_tokens":4,"output_tokens":779,"iterations":[{"type":"advisor_message","model":"claude-fable-5-1","input_tokens":114995,"output_tokens":2343}]}}}"#;
+            std::fs::write(&source, record).unwrap();
+            let parsed = crate::sessions::claudecode::parse_claude_file_with_home(
+                &source,
+                Some(source_home.path()),
+            );
+            let main = parsed[0].clone();
+            let mut compacted = main.clone();
+            compacted.dedup_key = Some("msg_compacted:req_old".to_string());
+            compacted.tokens.input = 7;
+            compacted.tokens.output = 3;
+            let identity = CacheIdentity::for_client(ClientId::Claude);
+            let fingerprint = SourceFingerprint::from_claude_code_path_with_home(
+                &source,
+                Some(source_home.path()),
+            )
+            .unwrap();
+            // Seed the exact old marker and parent-only output of the prior parser.
+            let entry = CachedSourceEntry::new(
+                identity,
+                &source,
+                fingerprint.clone(),
+                vec![main, compacted],
+                vec![1, usize::MAX],
+                None,
+            );
+            let path = cache_shard_path(identity, &source);
+            ensure_cache_dir(path.parent().unwrap()).unwrap();
+            write_shard_with_limit(&path, identity, &[entry], MAX_CACHE_SHARD_BYTES).unwrap();
+            let old = SourceMessageCache::load();
+            let entry = old.get(identity, &source).unwrap();
+            assert!(entry.needs_retention_provenance_migration());
+            assert_eq!(
+                entry.messages.len(),
+                2,
+                "history must remain readable before rebuilding"
+            );
+            let scan = || {
+                let mut messages = crate::parse_all_messages_with_pricing_with_env_strategy(
+                    source_home.path().to_str().unwrap(),
+                    &["claude".to_string()],
+                    None,
+                    false,
+                    &crate::scanner::ScannerSettings::default(),
+                );
+                messages.sort_by(|a, b| a.dedup_key.cmp(&b.dedup_key));
+                messages
+            };
+            let rebuilt = scan();
+            assert_eq!(rebuilt.len(), 3);
+            assert_eq!(rebuilt.iter().map(|m| m.tokens.input).sum::<i64>(), 115006);
+            assert_eq!(rebuilt.iter().map(|m| m.message_count).sum::<i32>(), 2);
+            let advisor = rebuilt
+                .iter()
+                .find(|m| m.model_id == "claude-fable-5-1")
+                .unwrap();
+            assert_eq!(advisor.tokens.output, 2343);
+            assert_eq!(
+                advisor.client,
+                if mirror {
+                    "cc-mirror/anthropic-mirror"
+                } else {
+                    "claude"
+                }
+            );
+            let cache = SourceMessageCache::load();
+            let entry = cache.get(identity, &source).unwrap();
+            assert_eq!(
+                entry.fingerprint, fingerprint,
+                "upgrade must reparse unchanged bytes"
+            );
+            assert!(!entry.needs_retention_provenance_migration());
+            assert_eq!(
+                entry.retained_message_keys(),
+                HashSet::from(["msg_compacted:req_old".to_string()])
+            );
+            let rebuilds = crate::RETENTION_PROVENANCE_REBUILDS.load(Relaxed);
+            assert_eq!(scan(), rebuilt);
+            assert_eq!(
+                crate::RETENTION_PROVENANCE_REBUILDS.load(Relaxed),
+                rebuilds,
+                "subsequent scans must be warm hits"
+            );
+            std::fs::write(source.with_file_name("fork.jsonl"), record).unwrap();
+            let forked = scan();
+            let usage = |messages: &[UnifiedMessage]| {
+                messages
+                    .iter()
+                    .map(|m| {
+                        (
+                            m.dedup_key.clone(),
+                            m.model_id.clone(),
+                            m.tokens.clone(),
+                            m.message_count,
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            };
+            // The first sorted live copy owns session attribution; usage is stable.
+            assert_eq!(
+                usage(&forked),
+                usage(&rebuilt),
+                "fork copies must not count advisors twice"
+            );
+        }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn cline_input_rebuilds_predecessor_cache_for_unchanged_transcript() {
+        let home = TempDir::new().unwrap();
+        let _env = sandbox_cache_env(home.path());
+        let session = home.path().join(".cline/data/sessions/s1");
+        fs::create_dir_all(&session).unwrap();
+        let path = session.join("s1.messages.json");
+        fs::write(&path, r#"{"sessionId":"s1","messages":[{"id":"a1","role":"assistant","ts":1786406085634,"modelInfo":{"id":"deepseek-v4-flash","provider":"opencode-go"},"metrics":{"inputTokens":10,"outputTokens":10,"cacheReadTokens":100,"cacheWriteTokens":50,"cost":0.01}}]}"#).unwrap();
+        let fingerprint = match SourceFingerprint::check_cline_path_samples_only(&path, None) {
+            Some(FingerprintStatus::Changed(fingerprint)) => fingerprint,
+            other => panic!("expected initial fingerprint, got {other:?}"),
+        };
+        let identity = CacheIdentity::for_client(ClientId::Cline);
+        let predecessor = CacheIdentity {
+            namespace: identity.namespace,
+            parser_version: crate::sessions::roocode::ROO_KILO_TASK_LOG_PARSER_BASE_VERSION + 2,
+        };
+        let mut legacy = crate::sessions::cline::parse_cline_file(&path);
+        assert_eq!(legacy.len(), 1);
+        legacy[0].tokens.input = -140;
+        let entry = CachedSourceEntry::new(
+            predecessor,
+            &path,
+            fingerprint.clone(),
+            legacy,
+            Vec::new(),
+            None,
+        );
+        let shard = cache_shard_path(identity, &path);
+        ensure_cache_dir(shard.parent().unwrap()).unwrap();
+        write_shard_with_limit(&shard, predecessor, &[entry], MAX_CACHE_SHARD_BYTES).unwrap();
+
+        let parsed = crate::parse_all_messages_with_pricing_with_env_strategy(
+            home.path().to_str().unwrap(),
+            &["cline".to_string()],
+            None,
+            false,
+            &crate::scanner::ScannerSettings::default(),
+        );
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(
+            parsed[0].tokens.input, 0,
+            "unchanged warm sources must not retain negative input"
+        );
+        assert_eq!(parsed[0].tokens.total(), 160);
+        assert!(matches!(
+            SourceFingerprint::check_cline_path_samples_only(&path, Some(&fingerprint)),
+            Some(FingerprintStatus::Unchanged)
+        ));
+        let cache = SourceMessageCache::load();
+        let rebuilt = cache.get(identity, &path).unwrap();
+        assert_eq!(rebuilt.parser_version, identity.parser_version);
+        assert_eq!(rebuilt.messages, parsed);
+        let warm = crate::parse_all_messages_with_pricing_with_env_strategy(
+            home.path().to_str().unwrap(),
+            &["cline".to_string()],
+            None,
+            false,
+            &crate::scanner::ScannerSettings::default(),
+        );
+        assert_eq!(warm, parsed);
+        assert_eq!(cache.get(identity, &path).unwrap().messages, parsed);
+    }
+
+    #[test]
     fn test_devin_parser_versions_invalidate_v3_entries() {
         assert_eq!(parser_version(ClientId::DevinCli), 4);
         assert_eq!(parser_version(ClientId::DevinDesktop), 2);
     }
 
     #[test]
-    fn test_codex_parser_version_invalidates_v10_entries() {
+    fn test_codex_parser_version_invalidates_v11_entries() {
         // v6->v7 splits `reasoning_output_tokens` out of the Codex output
         // bucket, v7->v8 retags rollouts OpenClaw originated as openclaw, and
         // v8->v9 buckets agent attribution into "Codex" / "Codex Subagent" /
         // "Codex Guardian" / "Codex Headless" instead of the per-thread random
-        // nickname; v9->v10 retains service_tier for Fast mode pricing, and
+        // nickname; v9->v10 retains service_tier for Fast mode pricing,
         // v10->v11 resets duration anchors at standalone task_started events.
+        // v11->v13 retains source completeness and gateway activity for empty
+        // results, and v13->v14 decodes compressed archives (.jsonl.zst).
         // Each bump is what stops an existing cache from replaying the old
         // rows, so it has to be asserted rather than assumed.
-        assert_eq!(parser_version(ClientId::Codex), 11);
+        assert_eq!(parser_version(ClientId::Codex), 14);
         assert_eq!(parser_version(ClientId::Claude), 2);
     }
 
@@ -4308,7 +4588,7 @@ mod tests {
         assert_eq!(parser_version(ClientId::DevinCli), 4);
         assert_eq!(parser_version(ClientId::Zcode), 3);
         assert_eq!(parser_version(ClientId::OpenCodeReview), 3);
-        assert_eq!(parser_version(ClientId::Kiro), 2);
+        assert_eq!(parser_version(ClientId::Kiro), 3);
     }
 
     #[test]
@@ -4653,6 +4933,50 @@ mod tests {
         let mut cache = SourceMessageCache::load();
         assert!(cache.get(identity, &source).is_none());
         let parsed = crate::sessions::openclaw::parse_openclaw_transcript(&source);
+        assert_eq!(parsed.len(), 1);
+        cache.insert(CachedSourceEntry::new(
+            identity,
+            &source,
+            fingerprint,
+            parsed.clone(),
+            Vec::new(),
+            None,
+        ));
+        cache.save_if_dirty();
+        let warm = SourceMessageCache::load();
+        assert_eq!(warm.get(identity, &source).unwrap().messages, parsed);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn codex_compressed_archives_discard_cached_empty_v11_results() {
+        let temp_home = TempDir::new().unwrap();
+        let _cache_env = sandbox_cache_env(temp_home.path());
+        let source = temp_home.path().join("rollout.jsonl.zst");
+        let content = br#"{"timestamp":"2026-10-01T00:00:00Z","type":"turn_context","payload":{"model":"gpt-5"}}
+{"timestamp":"2026-10-01T00:00:01Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":140,"cached_input_tokens":30,"output_tokens":20,"reasoning_output_tokens":10,"total_tokens":160},"last_token_usage":{"input_tokens":140,"cached_input_tokens":30,"output_tokens":20,"reasoning_output_tokens":10,"total_tokens":160}}}}"#;
+        fs::write(&source, zstd::encode_all(&content[..], 0).unwrap()).unwrap();
+        let identity = CacheIdentity::for_client(ClientId::Codex);
+        let old_identity = CacheIdentity {
+            parser_version: 11,
+            ..identity
+        };
+        let fingerprint = SourceFingerprint::from_path(&source).unwrap();
+        let entry = CachedSourceEntry::new(
+            old_identity,
+            &source,
+            fingerprint.clone(),
+            Vec::new(),
+            Vec::new(),
+            None,
+        );
+        let shard = cache_shard_path(identity, &source);
+        ensure_cache_dir(shard.parent().unwrap()).unwrap();
+        write_shard_with_limit(&shard, old_identity, &[entry], MAX_CACHE_SHARD_BYTES).unwrap();
+
+        let mut cache = SourceMessageCache::load();
+        assert!(cache.get(identity, &source).is_none());
+        let parsed = crate::sessions::codex::parse_codex_file(&source);
         assert_eq!(parsed.len(), 1);
         cache.insert(CachedSourceEntry::new(
             identity,
@@ -5699,7 +6023,7 @@ mod tests {
                 &[
                     (ClientId::RooCode, 0),
                     (ClientId::KiloCode, 0),
-                    (ClientId::Cline, 2),
+                    (ClientId::Cline, 3),
                 ],
             ),
             (
@@ -6257,6 +6581,94 @@ mod tests {
         );
         assert_eq!(third[0].tokens, first[0].tokens);
         assert_warm("a re-parsed session");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_kiro_cli_credit_cache_is_rebuilt_without_source_changes() {
+        let cache_home = TempDir::new().unwrap();
+        let _cache_env = sandbox_cache_env(cache_home.path());
+        let source_home = TempDir::new().unwrap();
+        let source = PathBuf::from(
+            ClientId::Kiro
+                .data()
+                .resolve_path_with_env_strategy(&source_home.path().to_string_lossy(), false),
+        )
+        .join("credits.json");
+        std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+        std::fs::write(
+            &source,
+            r#"{"session_id":"cached-credits","session_state":{"conversation_metadata":{"user_turn_metadatas":[{"input_token_count":1,"output_token_count":2,"metering_usage":[{"value":0.25,"unit":"credit"}]},{"input_token_count":3,"output_token_count":4,"metering_usage":[{"value":0.25,"unit":"credit"}]}]}}}"#,
+        )
+        .unwrap();
+        std::fs::write(source.with_extension("jsonl"), "").unwrap();
+        let fingerprint = match SourceFingerprint::check_kiro_path_samples_only(&source, None)
+            .unwrap()
+        {
+            FingerprintStatus::Changed(fingerprint) => fingerprint,
+            FingerprintStatus::Unchanged => panic!("an uncached source must build a fingerprint"),
+        };
+        let identity = CacheIdentity::for_client(ClientId::Kiro);
+        let stale_identity = CacheIdentity {
+            namespace: identity.namespace,
+            parser_version: 2,
+        };
+        let mut stale_messages = crate::sessions::kiro::parse_kiro_file(&source);
+        assert_eq!(stale_messages.len(), 2);
+        stale_messages[0].cost = 0.02;
+        stale_messages[0].mark_provider_reported_cost();
+        stale_messages[1].cost = 0.0;
+        stale_messages[1].cost_source = crate::sessions::CostSource::Unknown;
+        let stale_entry = CachedSourceEntry::new(
+            stale_identity,
+            &source,
+            fingerprint.clone(),
+            stale_messages,
+            Vec::new(),
+            None,
+        );
+        let shard = cache_shard_path(identity, &source);
+        ensure_cache_dir(shard.parent().unwrap()).unwrap();
+        write_shard_with_limit(
+            &shard,
+            stale_identity,
+            &[stale_entry],
+            MAX_CACHE_SHARD_BYTES,
+        )
+        .unwrap();
+        assert!(SourceMessageCache::load().get(identity, &source).is_none());
+        assert!(matches!(
+            SourceFingerprint::check_kiro_path_samples_only(&source, Some(&fingerprint)),
+            Some(FingerprintStatus::Unchanged)
+        ));
+
+        let parse = || {
+            crate::parse_all_messages_with_pricing_with_env_strategy(
+                source_home.path().to_str().unwrap(),
+                &["kiro".to_string()],
+                None,
+                false,
+                &crate::scanner::ScannerSettings::default(),
+            )
+        };
+        let first = parse();
+        assert_eq!(first.len(), 2);
+        for message in &first {
+            assert!((message.cost - 0.01).abs() < 1e-9);
+            assert_eq!(
+                message.cost_source,
+                crate::sessions::CostSource::ProviderReported
+            );
+        }
+        let rebuilt = SourceMessageCache::load();
+        let cached = rebuilt.get(identity, &source).unwrap();
+        assert_eq!(cached.fingerprint, fingerprint);
+        assert_eq!(cached.messages, first);
+        assert_eq!(
+            parse(),
+            first,
+            "warm cache must retain per-turn cost authority"
+        );
     }
 
     #[test]

@@ -21,7 +21,7 @@ use super::data::{
 
 /// Cache staleness threshold: 5 minutes (matches TS implementation)
 const CACHE_STALE_THRESHOLD_MS: u64 = 5 * 60 * 1000;
-const CACHE_SCHEMA_VERSION: u32 = 10;
+const CACHE_SCHEMA_VERSION: u32 = 11;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -152,6 +152,8 @@ struct CachedModelUsage {
     #[serde(default)]
     performance: ModelPerformance,
     session_count: u32,
+    #[serde(default)]
+    group_key: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -179,6 +181,8 @@ struct CachedDailyModelInfo {
     cost: f64,
     #[serde(default)]
     messages: u64,
+    #[serde(default)]
+    performance: ModelPerformance,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -286,6 +290,7 @@ impl From<&ModelUsage> for CachedModelUsage {
             cost: m.cost,
             performance: m.performance.clone(),
             session_count: m.session_count,
+            group_key: m.group_key.clone(),
         }
     }
 }
@@ -308,6 +313,8 @@ impl From<CachedModelUsage> for ModelUsage {
             cost: m.cost,
             performance: m.performance,
             session_count: m.session_count,
+            group_key: m.group_key,
+            daily: Vec::new(),
         }
     }
 }
@@ -346,6 +353,7 @@ impl From<&DailyModelInfo> for CachedDailyModelInfo {
             tokens: (&d.tokens).into(),
             cost: d.cost,
             messages: d.messages,
+            performance: d.performance.clone(),
         }
     }
 }
@@ -372,6 +380,7 @@ fn daily_model_info_from_cached(key: &str, value: CachedDailyModelInfo) -> Daily
         tokens: value.tokens.into(),
         cost: value.cost,
         messages: value.messages,
+        performance: value.performance,
     }
 }
 
@@ -1341,7 +1350,7 @@ mod tests {
             &cache_path,
             with_current_generation(
                 r#"{
-  "schemaVersion": 10,
+  "schemaVersion": 11,
   "timestamp": 9999999999999,
   "enabledClients": ["claude"],
   "includeSynthetic": false,
@@ -1620,7 +1629,7 @@ mod tests {
             &cache_path,
             with_current_generation(
                 r#"{
-  "schemaVersion": 10,
+  "schemaVersion": 11,
   "timestamp": 9999999999999,
   "enabledClients": ["claude", "cursor"],
   "includeSynthetic": false,
@@ -1869,7 +1878,7 @@ mod tests {
     }
 
     const LEGACY_FALLBACK_PAYLOAD: &str = r#"{
-  "schemaVersion": 10,
+  "schemaVersion": 11,
   "timestamp": 9999999999999,
   "enabledClients": ["claude"],
   "includeSynthetic": false,
@@ -2149,5 +2158,29 @@ mod tests {
             "expected Miss when reader uses TUI_DEFAULT_GROUP_BY and writer used GroupBy::default(), got {}",
             other_variant_name(&result)
         );
+    }
+
+    #[test]
+    fn daily_model_performance_survives_cache_round_trip() {
+        let original = DailyModelInfo {
+            provider: "anthropic".to_string(),
+            display_name: "claude-sonnet-4-5".to_string(),
+            color_key: "claude-sonnet-4-5".to_string(),
+            tokens: TokenBreakdown {
+                input: 100,
+                output: 50,
+                ..TokenBreakdown::default()
+            },
+            cost: 1.5,
+            messages: 2,
+            performance: ModelPerformance::from_totals(300, 150, 2),
+        };
+
+        let json = serde_json::to_string(&CachedDailyModelInfo::from(&original)).unwrap();
+        let restored =
+            daily_model_info_from_cached("claude-sonnet-4-5", serde_json::from_str(&json).unwrap());
+
+        assert_eq!(restored.performance, original.performance);
+        assert_eq!(restored.performance.ms_per_1k_tokens, Some(2000.0));
     }
 }

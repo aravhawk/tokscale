@@ -134,6 +134,7 @@ pub enum MessageKey {
     // Empty state messages
     EmptyNoUsageData,
     EmptyNoModelDetailsDay,
+    EmptyNoModelTrendData,
 
     // Footer counts & labels
     FooterTokens,
@@ -201,6 +202,20 @@ pub enum MessageKey {
     ConfirmYes,
     ConfirmNo,
 
+    // Dialog: Session Details
+    HelpSessionDetails,
+    SessionDetailDialogTitle,
+    SessionDetailDialogHint,
+    SessionDetailId,
+    SessionDetailTitle,
+    SessionDetailDirectory,
+    SessionDetailFirstActive,
+    SessionDetailSubagents,
+    SessionDetailSectionOverview,
+    SessionDetailSectionActivity,
+    SessionDetailSectionTokens,
+    SessionDetailReasoning,
+
     // Status / Messages
     StatusLoadedFromCache,
     StatusRefreshInProgress,
@@ -223,6 +238,7 @@ pub enum MessageKey {
     TitleDayBreakdown,
     TitleDailyDetail,
     TitleDailyDetailPrefix,
+    TitleModelTrendPrefix,
     TitleDailyBreakdown,
     TitleDailyBreakdownPrefix,
 
@@ -573,6 +589,7 @@ const fn tr_en(key: MessageKey) -> &'static str {
         MessageKey::EmptyNoModelDetailsDay => {
             "No model details found for this day. Press Esc to go back."
         }
+        MessageKey::EmptyNoModelTrendData => "No daily data for this model yet. Press Esc to go back.",
 
         MessageKey::FooterTokens => " tokens",
         MessageKey::CountModels => "models",
@@ -634,6 +651,19 @@ const fn tr_en(key: MessageKey) -> &'static str {
         MessageKey::ConfirmYes => "Yes",
         MessageKey::ConfirmNo => "No",
 
+        MessageKey::HelpSessionDetails => "[enter/i:details]",
+        MessageKey::SessionDetailDialogTitle => " Session Details ",
+        MessageKey::SessionDetailDialogHint => "Esc/q/Enter/i close • ↑↓/j/k scroll",
+        MessageKey::SessionDetailId => "Session ID",
+        MessageKey::SessionDetailTitle => "Title",
+        MessageKey::SessionDetailDirectory => "Directory",
+        MessageKey::SessionDetailFirstActive => "First Active",
+        MessageKey::SessionDetailSubagents => "Subagents",
+        MessageKey::SessionDetailSectionOverview => "Session Overview",
+        MessageKey::SessionDetailSectionActivity => "Activity",
+        MessageKey::SessionDetailSectionTokens => "Tokens & Cost",
+        MessageKey::SessionDetailReasoning => "Reasoning",
+
         MessageKey::StatusLoadedFromCache => "Loaded from cache",
         MessageKey::StatusRefreshInProgress => "Refresh already in progress",
         MessageKey::StatusLanguageChanged => "Language changed to",
@@ -654,6 +684,7 @@ const fn tr_en(key: MessageKey) -> &'static str {
         MessageKey::TitleDayBreakdown => " Day Breakdown (ESC to close) ",
         MessageKey::TitleDailyDetail => " Daily Detail ",
         MessageKey::TitleDailyDetailPrefix => " Daily Detail: ",
+        MessageKey::TitleModelTrendPrefix => " Daily Trend: ",
         MessageKey::TitleDailyBreakdown => " Daily Breakdown ",
         MessageKey::TitleDailyBreakdownPrefix => " Daily Breakdown: ",
 
@@ -978,6 +1009,7 @@ const fn tr_ko(key: MessageKey) -> Option<&'static str> {
         MessageKey::EmptyNoModelDetailsDay => {
             "이 날짜의 모델 상세 내역이 없습니다. Esc를 눌러 돌아가기."
         }
+        MessageKey::EmptyNoModelTrendData => "이 모델의 일별 데이터가 아직 없습니다. Esc를 눌러 돌아가기.",
 
         MessageKey::FooterTokens => " 토큰",
         MessageKey::CountModels => "개 모델",
@@ -1037,6 +1069,19 @@ const fn tr_ko(key: MessageKey) -> Option<&'static str> {
         MessageKey::ConfirmYes => "예",
         MessageKey::ConfirmNo => "아니오",
 
+        MessageKey::HelpSessionDetails => "[enter/i:상세]",
+        MessageKey::SessionDetailDialogTitle => " 세션 상세 ",
+        MessageKey::SessionDetailDialogHint => "Esc/q/Enter/i 닫기 • ↑↓/j/k 스크롤",
+        MessageKey::SessionDetailId => "세션 ID",
+        MessageKey::SessionDetailTitle => "제목",
+        MessageKey::SessionDetailDirectory => "디렉터리",
+        MessageKey::SessionDetailFirstActive => "시작 시간",
+        MessageKey::SessionDetailSubagents => "하위 에이전트",
+        MessageKey::SessionDetailSectionOverview => "세션 개요",
+        MessageKey::SessionDetailSectionActivity => "활동",
+        MessageKey::SessionDetailSectionTokens => "토큰 및 비용",
+        MessageKey::SessionDetailReasoning => "추론",
+
         MessageKey::StatusLoadedFromCache => "캐시에서 불러옴",
         MessageKey::StatusRefreshInProgress => "새로고침이 이미 진행 중입니다",
         MessageKey::StatusLanguageChanged => "언어가 다음으로 변경되었습니다:",
@@ -1057,6 +1102,7 @@ const fn tr_ko(key: MessageKey) -> Option<&'static str> {
         MessageKey::TitleDayBreakdown => " 일별 상세 (ESC: 닫기) ",
         MessageKey::TitleDailyDetail => " 일별 상세 ",
         MessageKey::TitleDailyDetailPrefix => " 일별 상세: ",
+        MessageKey::TitleModelTrendPrefix => " 일별 추이: ",
         MessageKey::TitleDailyBreakdown => " 일별 내역 ",
         MessageKey::TitleDailyBreakdownPrefix => " 일별 내역: ",
 
@@ -1388,6 +1434,7 @@ const fn tr_ja(key: MessageKey) -> Option<&'static str> {
             "使用量データが見つかりません。'r': 再読み込み, 's': ソース, 'g': グループ化。"
         }
         MessageKey::EmptyNoModelDetailsDay => "この日のモデル詳細がありません。Escで戻る。",
+        MessageKey::EmptyNoModelTrendData => "このモデルの日別データはまだありません。Escで戻る。",
 
         MessageKey::FooterTokens => " トークン",
         MessageKey::CountModels => "モデル",
@@ -1447,6 +1494,19 @@ const fn tr_ja(key: MessageKey) -> Option<&'static str> {
         MessageKey::ConfirmYes => "はい",
         MessageKey::ConfirmNo => "いいえ",
 
+        MessageKey::HelpSessionDetails => "[enter/i:詳細]",
+        MessageKey::SessionDetailDialogTitle => " セッション詳細 ",
+        MessageKey::SessionDetailDialogHint => "Esc/q/Enter/i 閉じる • ↑↓/j/k スクロール",
+        MessageKey::SessionDetailId => "セッションID",
+        MessageKey::SessionDetailTitle => "タイトル",
+        MessageKey::SessionDetailDirectory => "ディレクトリ",
+        MessageKey::SessionDetailFirstActive => "開始日時",
+        MessageKey::SessionDetailSubagents => "サブエージェント",
+        MessageKey::SessionDetailSectionOverview => "セッション概要",
+        MessageKey::SessionDetailSectionActivity => "アクティビティ",
+        MessageKey::SessionDetailSectionTokens => "トークンとコスト",
+        MessageKey::SessionDetailReasoning => "推論",
+
         MessageKey::StatusLoadedFromCache => "キャッシュから読み込みました",
         MessageKey::StatusRefreshInProgress => "更新はすでに処理中です",
         MessageKey::StatusLanguageChanged => "言語を変更しました:",
@@ -1467,6 +1527,7 @@ const fn tr_ja(key: MessageKey) -> Option<&'static str> {
         MessageKey::TitleDayBreakdown => " 日別内訳 (ESCで閉じる) ",
         MessageKey::TitleDailyDetail => " 日別詳細 ",
         MessageKey::TitleDailyDetailPrefix => " 日別詳細: ",
+        MessageKey::TitleModelTrendPrefix => " 日別推移: ",
         MessageKey::TitleDailyBreakdown => " 日別内訳 ",
         MessageKey::TitleDailyBreakdownPrefix => " 日別内訳: ",
 
@@ -1789,6 +1850,7 @@ const fn tr_zh_cn(key: MessageKey) -> Option<&'static str> {
 
         MessageKey::EmptyNoUsageData => "未找到使用量数据。按 'r' 刷新，'s' 查看来源，'g' 分组。",
         MessageKey::EmptyNoModelDetailsDay => "当天未找到模型详细信息。按 Esc 返回。",
+        MessageKey::EmptyNoModelTrendData => "该模型暂无每日数据。按 Esc 返回。",
 
         MessageKey::FooterTokens => " Token",
         MessageKey::CountModels => "个模型",
@@ -1848,6 +1910,19 @@ const fn tr_zh_cn(key: MessageKey) -> Option<&'static str> {
         MessageKey::ConfirmYes => "是",
         MessageKey::ConfirmNo => "否",
 
+        MessageKey::HelpSessionDetails => "[enter/i:详情]",
+        MessageKey::SessionDetailDialogTitle => " 会话详情 ",
+        MessageKey::SessionDetailDialogHint => "Esc/q/Enter/i 关闭 • ↑↓/j/k 滚动",
+        MessageKey::SessionDetailId => "会话 ID",
+        MessageKey::SessionDetailTitle => "标题",
+        MessageKey::SessionDetailDirectory => "目录",
+        MessageKey::SessionDetailFirstActive => "开始时间",
+        MessageKey::SessionDetailSubagents => "子智能体",
+        MessageKey::SessionDetailSectionOverview => "会话概览",
+        MessageKey::SessionDetailSectionActivity => "活动",
+        MessageKey::SessionDetailSectionTokens => "Token 与费用",
+        MessageKey::SessionDetailReasoning => "推理",
+
         MessageKey::StatusLoadedFromCache => "已从缓存载入",
         MessageKey::StatusRefreshInProgress => "刷新已在进行中",
         MessageKey::StatusLanguageChanged => "语言已更改为",
@@ -1868,6 +1943,7 @@ const fn tr_zh_cn(key: MessageKey) -> Option<&'static str> {
         MessageKey::TitleDayBreakdown => " 每日明细 (ESC关闭) ",
         MessageKey::TitleDailyDetail => " 每日详情 ",
         MessageKey::TitleDailyDetailPrefix => " 每日详情: ",
+        MessageKey::TitleModelTrendPrefix => " 每日趋势: ",
         MessageKey::TitleDailyBreakdown => " 每日明细 ",
         MessageKey::TitleDailyBreakdownPrefix => " 每日明细: ",
 
@@ -2182,6 +2258,7 @@ const fn tr_fr(key: MessageKey) -> Option<&'static str> {
         MessageKey::EmptyNoModelDetailsDay => {
             "Aucun détail de modèle pour ce jour. Appuyez sur Échap pour revenir."
         }
+        MessageKey::EmptyNoModelTrendData => "Pas encore de données quotidiennes pour ce modèle. Appuyez sur Échap pour revenir.",
 
         MessageKey::FooterTokens => " jetons",
         MessageKey::CountModels => "modèles",
@@ -2241,6 +2318,19 @@ const fn tr_fr(key: MessageKey) -> Option<&'static str> {
         MessageKey::ConfirmYes => "Oui",
         MessageKey::ConfirmNo => "Non",
 
+        MessageKey::HelpSessionDetails => "[enter/i:détails]",
+        MessageKey::SessionDetailDialogTitle => " Détails de la session ",
+        MessageKey::SessionDetailDialogHint => "Esc/q/Enter/i fermer • ↑↓/j/k défiler",
+        MessageKey::SessionDetailId => "ID de session",
+        MessageKey::SessionDetailTitle => "Titre",
+        MessageKey::SessionDetailDirectory => "Répertoire",
+        MessageKey::SessionDetailFirstActive => "Première activité",
+        MessageKey::SessionDetailSubagents => "Sous-agents",
+        MessageKey::SessionDetailSectionOverview => "Vue d'ensemble de la session",
+        MessageKey::SessionDetailSectionActivity => "Activité",
+        MessageKey::SessionDetailSectionTokens => "Jetons et coût",
+        MessageKey::SessionDetailReasoning => "Raisonnement",
+
         MessageKey::StatusLoadedFromCache => "Chargé depuis le cache",
         MessageKey::StatusRefreshInProgress => "Actualisation déjà en cours",
         MessageKey::StatusLanguageChanged => "Langue changée en",
@@ -2261,6 +2351,7 @@ const fn tr_fr(key: MessageKey) -> Option<&'static str> {
         MessageKey::TitleDayBreakdown => " Détail du jour (Échap pour fermer) ",
         MessageKey::TitleDailyDetail => " Détail quotidien ",
         MessageKey::TitleDailyDetailPrefix => " Détail quotidien : ",
+        MessageKey::TitleModelTrendPrefix => " Tendance quotidienne : ",
         MessageKey::TitleDailyBreakdown => " Détail quotidien ",
         MessageKey::TitleDailyBreakdownPrefix => " Détail quotidien : ",
 
@@ -2713,6 +2804,7 @@ mod tests {
             MessageKey::OverviewTotal,
             MessageKey::EmptyNoUsageData,
             MessageKey::EmptyNoModelDetailsDay,
+            MessageKey::EmptyNoModelTrendData,
             MessageKey::FooterTokens,
             MessageKey::CountModels,
             MessageKey::CountAgents,
@@ -2763,6 +2855,18 @@ mod tests {
             MessageKey::GroupByClientSessionDesc,
             MessageKey::ConfirmYes,
             MessageKey::ConfirmNo,
+            MessageKey::HelpSessionDetails,
+            MessageKey::SessionDetailDialogTitle,
+            MessageKey::SessionDetailDialogHint,
+            MessageKey::SessionDetailId,
+            MessageKey::SessionDetailTitle,
+            MessageKey::SessionDetailDirectory,
+            MessageKey::SessionDetailFirstActive,
+            MessageKey::SessionDetailSubagents,
+            MessageKey::SessionDetailSectionOverview,
+            MessageKey::SessionDetailSectionActivity,
+            MessageKey::SessionDetailSectionTokens,
+            MessageKey::SessionDetailReasoning,
             MessageKey::StatusLoadedFromCache,
             MessageKey::StatusRefreshInProgress,
             MessageKey::StatusLanguageChanged,
@@ -2781,6 +2885,7 @@ mod tests {
             MessageKey::TitleDayBreakdown,
             MessageKey::TitleDailyDetail,
             MessageKey::TitleDailyDetailPrefix,
+            MessageKey::TitleModelTrendPrefix,
             MessageKey::TitleDailyBreakdown,
             MessageKey::TitleDailyBreakdownPrefix,
             MessageKey::ChartTokensPerDay,

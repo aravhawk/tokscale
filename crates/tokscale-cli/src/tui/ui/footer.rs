@@ -165,6 +165,11 @@ fn render_main_row(frame: &mut Frame, app: &mut App, area: Rect) {
 fn current_count_label(app: &App) -> String {
     let lang = app.settings.tui_language;
     match app.current_tab {
+        Tab::Models if app.is_model_trend_active() => format_count(
+            lang,
+            app.get_sorted_model_trend_rows().len(),
+            MessageKey::CountDays,
+        ),
         Tab::Overview | Tab::Models => {
             format_count(lang, app.data.models.len(), MessageKey::CountModels)
         }
@@ -230,11 +235,21 @@ fn render_help_row(frame: &mut Frame, app: &App, area: Rect) {
                 spans.push(Span::styled("↵", hint_style));
             }
         }
+        if app.current_tab == Tab::Models {
+            spans.push(Span::styled("·", Style::default().fg(app.theme.muted)));
+            if app.is_model_trend_active() {
+                spans.push(Span::styled("esc", hint_style));
+            } else {
+                spans.push(Span::styled("↵", hint_style));
+            }
+        }
         if app.current_tab == Tab::Hourly {
             spans.push(Span::styled("·", Style::default().fg(app.theme.muted)));
             spans.push(Span::styled("v", hint_style));
         }
         if app.current_tab == Tab::Sessions {
+            spans.push(Span::styled("·", Style::default().fg(app.theme.muted)));
+            spans.push(Span::styled("↵/i", hint_style));
             spans.push(Span::styled("·", Style::default().fg(app.theme.muted)));
             spans.push(Span::styled("b", hint_style));
         }
@@ -270,11 +285,24 @@ fn render_help_row(frame: &mut Frame, app: &App, area: Rect) {
             }
             spans.push(Span::styled(" • ", Style::default().fg(app.theme.muted)));
         }
+        if app.current_tab == Tab::Models {
+            if app.is_model_trend_active() {
+                spans.push(Span::styled(tr(lang, MessageKey::HelpBack), hint_style));
+            } else {
+                spans.push(Span::styled(tr(lang, MessageKey::HelpDetails), hint_style));
+            }
+            spans.push(Span::styled(" • ", Style::default().fg(app.theme.muted)));
+        }
         if app.current_tab == Tab::Hourly {
             spans.push(Span::styled(tr(lang, MessageKey::HelpProfile), hint_style));
             spans.push(Span::styled(" • ", Style::default().fg(app.theme.muted)));
         }
         if app.current_tab == Tab::Sessions {
+            spans.push(Span::styled(
+                tr(lang, MessageKey::HelpSessionDetails),
+                hint_style,
+            ));
+            spans.push(Span::styled(" ", Style::default()));
             spans.push(Span::styled(
                 if app.roll_up_subagents {
                     tr(lang, MessageKey::HelpRollupOn)
