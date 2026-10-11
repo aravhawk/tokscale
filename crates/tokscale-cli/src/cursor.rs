@@ -1716,10 +1716,9 @@ where
                 } else {
                     total_rows += event_count;
                     success_count += 1;
-                    // Archive (don't delete) the legacy CSV counterpart now that
-                    // JSON is authoritative: pre-migration history survives and
-                    // the scanner never parses both and double-counts this account.
-                    if legacy_csv.exists() {
+                    // Only a complete fetch makes JSON authoritative. Keep
+                    // legacy CSV history while partial pages are being merged.
+                    if !incoming.partial && legacy_csv.exists() {
                         let label = legacy_csv
                             .file_stem()
                             .and_then(|stem| stem.to_str())
@@ -3540,6 +3539,94 @@ mod tests {
             1,
             "an overlapping event must not be stored twice: {stored}"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn test_sync_partial_fetch_preserves_legacy_csv_alongside_json() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let mut accounts = HashMap::new();
+        accounts.insert(
+            "active-account".to_string(),
+            CursorCredentials {
+                session_token: "token-active".to_string(),
+                user_id: Some("active-account".to_string()),
+                created_at: "2026-01-01T00:00:00Z".to_string(),
+                expires_at: None,
+                label: Some("work".to_string()),
+            },
+        );
+        save_credentials_store_in_home(
+            temp_dir.path(),
+            &CursorCredentialsStore {
+                version: 1,
+                active_account_id: "active-account".to_string(),
+                accounts,
+            },
+        )?;
+
+        let cache_dir = cursor_cache_dir(temp_dir.path());
+        fs::create_dir_all(&cache_dir)?;
+        let seeded = r#"{"usageEventsDisplay":[{"conversationId":"keep","timestamp":"1","model":"gpt-5","chargedCents":1},{"conversationId":"keep2","timestamp":"2","model":"gpt-5","chargedCents":2}]}"#;
+        fs::write(cache_dir.join("usage.json"), seeded)?;
+        let legacy_csv = "Date,Model,Input Tokens\n2026-01-01,gpt-5,123\n";
+        fs::write(cache_dir.join("usage.csv"), legacy_csv)?;
+
+        // More rows than the cache, but none of the cached conversations. A
+        // count-only replace would drop keep and keep2.
+        let partial = r#"{"partial":true,"usageEventsDisplay":[{"conversationId":"new","timestamp":"3","model":"gpt-5","chargedCents":1},{"conversationId":"keep2","timestamp":"2","model":"gpt-5","chargedCents":2},{"conversationId":"newer","timestamp":"4","model":"gpt-5","chargedCents":4}]}"#;
+        let runtime = tokio::runtime::Runtime::new()?;
+        let result = runtime.block_on(sync_cursor_cache_with_fetcher_in_home(
+            temp_dir.path(),
+            |_session_token| {
+                let partial = partial.to_string();
+                async move { Ok(partial) }
+            },
+        ));
+
+        assert!(result.synced, "a partial that adds rows must be stored");
+        assert_eq!(result.rows, 4);
+        let stored = fs::read_to_string(cache_dir.join("usage.json"))?;
+        assert!(cursor_usage_json_is_partial(&stored));
+        assert_eq!(count_cursor_json_events(&stored), 4);
+        assert!(
+            stored.contains("\"conversationId\":\"keep\""),
+            "cached events the partial never reached must survive: {stored}"
+        );
+        assert_eq!(
+            stored.matches("\"conversationId\":\"keep2\"").count(),
+            1,
+            "an overlapping event must not be stored twice: {stored}"
+        );
+        assert!(
+            cache_dir.join("usage.csv").exists(),
+            "a partial sync must not archive the legacy CSV alongside JSON"
+        );
+        assert_eq!(
+            fs::read_to_string(cache_dir.join("usage.csv"))?,
+            legacy_csv,
+            "a partial sync must preserve the legacy CSV until a complete fetch"
+        );
+        assert!(!cache_dir.join("archive").exists());
+
+        let complete = aggregated_usage_events(parse_cursor_usage_document(&stored).events, false)?;
+        let result = runtime.block_on(sync_cursor_cache_with_fetcher_in_home(
+            temp_dir.path(),
+            |_session_token| {
+                let complete = complete.clone();
+                async move { Ok(complete) }
+            },
+        ));
+        assert!(result.synced);
+        assert_eq!(result.rows, 4);
+        assert!(!cursor_usage_json_is_partial(&fs::read_to_string(
+            cache_dir.join("usage.json")
+        )?));
+        assert!(!cache_dir.join("usage.csv").exists());
+        let archived =
+            fs::read_dir(cache_dir.join("archive"))?.collect::<std::io::Result<Vec<_>>>()?;
+        assert_eq!(archived.len(), 1);
+        assert_eq!(fs::read_to_string(archived[0].path())?, legacy_csv);
         Ok(())
     }
 
