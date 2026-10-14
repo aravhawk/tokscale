@@ -1679,6 +1679,10 @@ where
     let mut total_rows = 0;
     let mut success_count = 0;
     let mut errors: Vec<String> = Vec::new();
+    let active_sanitized = sanitize_account_id_for_filename(&store.active_account_id);
+    let dup_json = cache_dir.join(format!("usage.{active_sanitized}.json"));
+    let dup_csv = cache_dir.join(format!("usage.{active_sanitized}.csv"));
+    let mut active_cache_complete = None;
 
     for (account_id, credentials) in &store.accounts {
         let is_active = account_id == &store.active_account_id;
@@ -1696,12 +1700,31 @@ where
 
                 let incoming = parse_cursor_usage_document(&json_text);
                 let legacy_csv = file_path.with_extension("csv");
+                if is_active && incoming.partial {
+                    active_cache_complete = Some(false);
+                    // A leftover per-account file can hold history this walk
+                    // never reached. Keep it and the active cache untouched
+                    // until a complete fetch can safely reconcile both names.
+                    if dup_json.exists() || dup_csv.exists() {
+                        errors.push(format!(
+                            "{account_id}: sync hit its time budget before the full history was collected; keeping existing cache"
+                        ));
+                        continue;
+                    }
+                }
 
                 // A zero-event result is suspicious once cached history exists:
                 // overwriting `usage.json` with nothing and archiving the legacy
                 // CSV would strip real usage from reports. Keep both caches intact
                 // and record it so the next sync can recover instead.
-                if incoming.events.is_empty() && (file_path.exists() || legacy_csv.exists()) {
+                if incoming.events.is_empty()
+                    && (file_path.exists()
+                        || legacy_csv.exists()
+                        || (is_active && (dup_json.exists() || dup_csv.exists())))
+                {
+                    if is_active {
+                        active_cache_complete = Some(false);
+                    }
                     errors.push(format!(
                         "{}: sync returned zero events; keeping existing cache",
                         account_id
@@ -1751,6 +1774,9 @@ where
                 } else {
                     total_rows += event_count;
                     success_count += 1;
+                    if is_active {
+                        active_cache_complete = Some(!incoming.partial);
+                    }
                     // Only a complete fetch makes JSON authoritative. Keep
                     // legacy CSV history while partial pages are being merged.
                     if !incoming.partial && legacy_csv.exists() {
@@ -1771,20 +1797,28 @@ where
     // Reconcile the active account's leftover per-account duplicate. The active
     // account is cached as `usage.json`; a `usage.<active_id>.json` copy left
     // over from when it was a secondary is only safe to drop once `usage.json`
-    // actually exists on disk — whether this run just wrote it or a prior run
-    // did. Gating on that existence keeps the duplicate when a failed first-time
+    // is complete on disk — whether this run just wrote it or a prior run
+    // did. Requiring a complete cache keeps the duplicate when a failed first-time
     // fetch leaves no `usage.json` (it is then the only data we have), while a
     // failed fetch that still has a good `usage.json` clears the duplicate so the
     // scanner never reads both JSON caches and double-counts the active account.
     // The JSON dup is a stale copy (removed); the legacy CSV dup is archived so
     // pre-migration history survives.
-    if cache_dir.join("usage.json").exists() {
-        let active_sanitized = sanitize_account_id_for_filename(&store.active_account_id);
-        let dup_json = cache_dir.join(format!("usage.{active_sanitized}.json"));
+    let active_json = cache_dir.join("usage.json");
+    if (dup_json.exists() || dup_csv.exists())
+        && active_json.exists()
+        && active_cache_complete.unwrap_or_else(|| {
+            fs::read_to_string(&active_json)
+                .map(|text| {
+                    let document = parse_cursor_usage_document(&text);
+                    !document.partial && !document.events.is_empty()
+                })
+                .unwrap_or(false)
+        })
+    {
         if dup_json.exists() {
             let _ = fs::remove_file(&dup_json);
         }
-        let dup_csv = cache_dir.join(format!("usage.{active_sanitized}.csv"));
         if dup_csv.exists() {
             let label = dup_csv
                 .file_stem()
@@ -3953,58 +3987,165 @@ mod tests {
     }
 
     #[test]
-    fn test_sync_clears_active_duplicate_even_when_fetch_fails() -> Result<()> {
-        let temp_dir = TempDir::new()?;
+    fn test_sync_partial_fetch_preserves_active_account_fallback_caches() -> Result<()> {
+        for extension in ["json", "csv"] {
+            for has_active_json in [false, true] {
+                let temp_dir = TempDir::new()?;
+                save_credentials_store_in_home(
+                    temp_dir.path(),
+                    &CursorCredentialsStore {
+                        version: 1,
+                        active_account_id: "active-account".to_string(),
+                        accounts: HashMap::from([(
+                            "active-account".to_string(),
+                            CursorCredentials {
+                                session_token: "token-active".to_string(),
+                                user_id: Some("active-account".to_string()),
+                                created_at: "2026-01-01T00:00:00Z".to_string(),
+                                expires_at: None,
+                                label: None,
+                            },
+                        )]),
+                    },
+                )?;
+                let cache_dir = cursor_cache_dir(temp_dir.path());
+                fs::create_dir_all(&cache_dir)?;
+                let fallback = cache_dir.join(format!("usage.active-account.{extension}"));
+                let old_json =
+                    String::from_utf8(json_page(1, &[&json_event("older", "1788171994001")]))?;
+                let old_cache = if extension == "json" {
+                    old_json.clone()
+                } else {
+                    "Date,Model,Input Tokens\n2026-01-01,gpt-5,123\n".to_string()
+                };
+                fs::write(&fallback, &old_cache)?;
+                let active = cache_dir.join("usage.json");
+                if has_active_json {
+                    fs::write(&active, &old_json)?;
+                }
 
-        let mut accounts = HashMap::new();
-        accounts.insert(
-            "active-account".to_string(),
-            CursorCredentials {
-                session_token: "token-active".to_string(),
-                user_id: Some("active-account".to_string()),
-                created_at: "2026-01-01T00:00:00Z".to_string(),
-                expires_at: None,
-                label: Some("work".to_string()),
-            },
-        );
-        save_credentials_store_in_home(
-            temp_dir.path(),
-            &CursorCredentialsStore {
-                version: 1,
-                active_account_id: "active-account".to_string(),
-                accounts,
-            },
-        )?;
+                let partial = aggregated_usage_events(
+                    vec![serde_json::from_str(&json_event("newer", "1788171994002"))?],
+                    true,
+                )?;
+                let runtime = tokio::runtime::Runtime::new()?;
+                let result = runtime.block_on(sync_cursor_cache_with_fetcher_in_home(
+                    temp_dir.path(),
+                    |_| std::future::ready(Ok(partial.clone())),
+                ));
 
-        // A good `usage.json` already exists alongside a stale per-account
-        // duplicate left over from when this account was a secondary. If the
-        // fetch fails, both JSON caches would otherwise remain and the scanner
-        // would double-count the active account.
-        let cache_dir = cursor_cache_dir(temp_dir.path());
-        fs::create_dir_all(&cache_dir)?;
-        let good = r#"{"usageEventsDisplay":[{"conversationId":"keep","timestamp":"1","model":"gpt-5","chargedCents":1}]}"#;
-        fs::write(cache_dir.join("usage.json"), good)?;
-        fs::write(cache_dir.join("usage.active-account.json"), good)?;
+                assert!(!result.synced, "partial fetch must retain fallback history");
+                assert_eq!(fs::read_to_string(&fallback)?, old_cache);
+                if has_active_json {
+                    assert_eq!(fs::read_to_string(&active)?, old_json);
+                } else {
+                    assert!(
+                        !active.exists(),
+                        "partial JSON must not replace the fallback"
+                    );
+                }
+                assert!(!cache_dir.join("archive").exists());
 
-        let runtime = tokio::runtime::Runtime::new()?;
-        let result = runtime.block_on(sync_cursor_cache_with_fetcher_in_home(
-            temp_dir.path(),
-            |_session_token| async move { Err(anyhow::anyhow!("network down")) },
-        ));
+                let result = runtime.block_on(sync_cursor_cache_with_fetcher_in_home(
+                    temp_dir.path(),
+                    |_| std::future::ready(Ok(r#"{"usageEventsDisplay":[]}"#.to_string())),
+                ));
+                assert!(
+                    !result.synced,
+                    "an empty fetch must also retain fallback history"
+                );
+                assert_eq!(fs::read_to_string(&fallback)?, old_cache);
+                if has_active_json {
+                    assert_eq!(fs::read_to_string(&active)?, old_json);
+                } else {
+                    assert!(!active.exists());
+                }
+                assert!(!cache_dir.join("archive").exists());
 
-        // The fetch failed, but the good cache survives and the duplicate is
-        // reconciled so the scanner reads only one JSON cache for the account.
-        assert!(!result.synced);
-        assert_eq!(
-            fs::read_to_string(cache_dir.join("usage.json"))?,
-            good,
-            "a failed fetch must not clobber the existing active cache"
-        );
-        assert!(
-            !cache_dir.join("usage.active-account.json").exists(),
-            "the stale active duplicate must be cleared so it can't double-count"
-        );
+                let complete = String::from_utf8(json_page(
+                    2,
+                    &[
+                        &json_event("older", "1788171994001"),
+                        &json_event("newer", "1788171994002"),
+                    ],
+                ))?;
+                let result = runtime.block_on(sync_cursor_cache_with_fetcher_in_home(
+                    temp_dir.path(),
+                    |_| std::future::ready(Ok(complete.clone())),
+                ));
+                assert!(result.synced);
+                assert_eq!(result.rows, 2);
+                assert_eq!(fs::read_to_string(&active)?, complete);
+                assert!(!fallback.exists());
+                if extension == "csv" {
+                    let archived = fs::read_dir(cache_dir.join("archive"))?
+                        .collect::<std::io::Result<Vec<_>>>()?;
+                    assert_eq!(archived.len(), 1);
+                    assert_eq!(fs::read_to_string(archived[0].path())?, old_cache);
+                }
+            }
+        }
+        Ok(())
+    }
 
+    #[test]
+    fn test_sync_failed_fetch_reconciles_duplicates_only_with_complete_cache() -> Result<()> {
+        for partial in [false, true] {
+            let temp_dir = TempDir::new()?;
+
+            let mut accounts = HashMap::new();
+            accounts.insert(
+                "active-account".to_string(),
+                CursorCredentials {
+                    session_token: "token-active".to_string(),
+                    user_id: Some("active-account".to_string()),
+                    created_at: "2026-01-01T00:00:00Z".to_string(),
+                    expires_at: None,
+                    label: Some("work".to_string()),
+                },
+            );
+            save_credentials_store_in_home(
+                temp_dir.path(),
+                &CursorCredentialsStore {
+                    version: 1,
+                    active_account_id: "active-account".to_string(),
+                    accounts,
+                },
+            )?;
+
+            // Failed fetches may reconcile an old complete cache, but a partial
+            // active cache cannot make the fallback history redundant.
+            let cache_dir = cursor_cache_dir(temp_dir.path());
+            fs::create_dir_all(&cache_dir)?;
+            let good = aggregated_usage_events(
+                vec![serde_json::from_str(&json_event("keep", "1788171994001"))?],
+                partial,
+            )?;
+            fs::write(cache_dir.join("usage.json"), &good)?;
+            fs::write(cache_dir.join("usage.active-account.json"), &good)?;
+            fs::write(cache_dir.join("usage.active-account.csv"), "legacy history")?;
+
+            let runtime = tokio::runtime::Runtime::new()?;
+            let result = runtime.block_on(sync_cursor_cache_with_fetcher_in_home(
+                temp_dir.path(),
+                |_session_token| async move { Err(anyhow::anyhow!("network down")) },
+            ));
+
+            assert!(!result.synced);
+            assert_eq!(
+                fs::read_to_string(cache_dir.join("usage.json"))?,
+                good,
+                "a failed fetch must not clobber the existing active cache"
+            );
+            assert_eq!(
+                cache_dir.join("usage.active-account.json").exists(),
+                partial
+            );
+            assert_eq!(cache_dir.join("usage.active-account.csv").exists(), partial);
+            if partial {
+                assert!(!cache_dir.join("archive").exists());
+            }
+        }
         Ok(())
     }
 
