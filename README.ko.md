@@ -611,7 +611,7 @@ tokscale autosubmit disable
 
 Cursor IDE 지원은 Cursor의 usage-events API를 사용합니다. Tokscale은 활성 계정을 `~/.config/tokscale/cursor-cache/usage.json`에, 나머지 계정을 `usage.<account>.json`에 캐시합니다. 이전 버전의 `usage.csv`는 해당 계정에 JSON 캐시가 아직 없을 때 읽고, 전체 동기화가 끝나면 `cursor-cache/archive/`로 옮겨 JSON과 두 번 세지 않습니다. Tokscale은 `~/.cursor` 아래의 로컬 Cursor Agent CLI 상태를 파싱하지 않으며, 데스크톱 SQLite DB를 사용량 원장으로 취급하지도 않습니다.
 
-Cursor 데스크톱 앱이 설치되어 있고 로그인되어 있어도, tokscale에 저장된 Cursor 로그인이 이미 있으면 그 로그인을 쓰고 데스크톱 토큰은 가져오지 않습니다. 저장된 로그인이 없을 때만 리포트, submit, `tokscale cursor sync` 전에 `state.vscdb`의 `cursorAuth/accessToken`을 가져옵니다. 사용량 캐시가 아직 신선하면 리포트는 동기화를 건너뛰므로, 데스크톱에서 새로 로그인한 계정이 그 로그인이나 신선한 캐시를 스스로 바꾸지는 않습니다. 데스크톱 세션이 없을 때만 `tokscale cursor login`이 필요합니다. 사용량 행은 계속 Cursor usage-events API에서만 가져오며, 로컬 `~/.cursor` 기록은 파싱하지 않습니다.
+Cursor 데스크톱 앱이 설치되어 있고 로그인되어 있으면, 저장된 Cursor 로그인이 없을 때 리포트, submit, wrapped가 `state.vscdb`의 `cursorAuth/accessToken`을 가져올 수 있습니다. wrapped는 요청한 클라이언트에 Cursor가 포함된 경우에만 가져옵니다. 사용량 캐시가 아직 최신이면 리포트는 동기화를 건너뜁니다. 명시적인 `tokscale cursor sync`를 포함해 동기화가 실행될 때마다 사용 가능한 데스크톱 토큰을 갱신하며, 활성 계정이 해당 데스크톱 로그인으로 전환될 수 있습니다. 데스크톱 세션이 없어도 저장된 로그인은 계속 사용할 수 있습니다. 사용량 행은 Cursor usage-events API에서만 가져오며, 로컬 `~/.cursor` 기록은 파싱하지 않습니다.
 
 설정 (데스크톱 자동 로그인):
 

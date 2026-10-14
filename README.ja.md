@@ -615,7 +615,7 @@ tokscale autosubmit disable
 
 Cursor IDE は Cursor の usage-events API を使います。Tokscale はアクティブアカウントを `~/.config/tokscale/cursor-cache/usage.json` に、その他のアカウントを `usage.<account>.json` にキャッシュします。古いバージョンの `usage.csv` は、そのアカウントに JSON キャッシュがまだない場合に読み、完全な同期が終わると `cursor-cache/archive/` に移して JSON と二重に数えません。Tokscale は `~/.cursor` 配下の Cursor Agent CLI ローカル状態を解析しません。また、デスクトップの SQLite DB を使用量台帳としては扱いません。
 
-Cursor デスクトップアプリがインストール済みでサインイン済みでも、Tokscale に保存済みの Cursor ログインがある場合はそのログインを使い、デスクトップのトークンは取り込みません。保存済みログインがないときだけ、レポート、submit、`tokscale cursor sync` の前に `state.vscdb` の `cursorAuth/accessToken` を取り込みます。レポートは用量キャッシュが新しいあいだ同期をスキップするので、デスクトップで別アカウントにサインインしても、保存済みログインや新しいキャッシュはそのまま残ります。デスクトップのセッションがないときだけ `tokscale cursor login` が必要です。使用量行は引き続き Cursor の usage-events API からのみ取得し、ローカルの `~/.cursor` トランスクリプトは解析しません。
+Cursor デスクトップアプリがインストール済みでサインイン済みの場合、保存済みの Cursor ログインがなければ、レポート、submit、wrapped は `state.vscdb` の `cursorAuth/accessToken` を取り込めます。wrapped は対象クライアントに Cursor が含まれる場合だけ取り込みます。使用量キャッシュが新しい間、レポートは同期をスキップします。明示的な `tokscale cursor sync` を含め、同期が実行されるたびに、利用可能なデスクトップトークンを更新し、そのデスクトップログインへアクティブアカウントを切り替えることがあります。デスクトップセッションがない場合も、保存済みログインは引き続き利用できます。使用量行は Cursor の usage-events API からのみ取得し、ローカルの `~/.cursor` トランスクリプトは解析しません。
 
 セットアップ（デスクトップ自動ログイン）:
 

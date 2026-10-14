@@ -611,7 +611,7 @@ tokscale autosubmit disable
 
 Cursor IDE 使用 Cursor 的 usage-events API。Tokscale 把当前账户的导出缓存在 `~/.config/tokscale/cursor-cache/usage.json`，其他账户缓存在 `usage.<account>.json`。对于尚无 JSON 缓存的账户，旧版本的 `usage.csv` 仍会被读取；一次完整同步会把它移到 `cursor-cache/archive/`，避免和 JSON 重复计算。Tokscale **不会**解析 `~/.cursor` 下的 Cursor Agent CLI 本地会话，也不会把桌面端 SQLite 当作用量账本。
 
-本机已安装并登录 Cursor 桌面端时，如果 tokscale 还没有已保存的 Cursor 登录，报告、提交或 `tokscale cursor sync` 会在同步前从 `state.vscdb` 导入 `cursorAuth/accessToken`。已保存的登录保持不变。用量缓存仍新鲜时，报告会跳过同步，因此新登录的桌面账号不会自行替换该登录或一份新鲜缓存。只有缺少桌面端会话时才需要 `tokscale cursor login`。用量数据仍只来自 Cursor 的 usage-events API，而不是本地 `~/.cursor` 记录。
+本机已安装并登录 Cursor 桌面端时，如果还没有已保存的 Cursor 登录，报告、submit 和 wrapped 可以从 `state.vscdb` 导入 `cursorAuth/accessToken`。wrapped 仅在请求的客户端包含 Cursor 时导入。用量缓存仍新鲜时，报告会跳过同步。每次实际同步时，包括显式运行 `tokscale cursor sync`，都会在桌面会话可用时刷新其令牌，并可能将活动账号切换到该桌面登录。缺少桌面会话时，已保存的登录仍可使用。用量数据仍只来自 Cursor 的 usage-events API，而不是本地 `~/.cursor` 记录。
 
 设置（桌面端自动登录）：
 
