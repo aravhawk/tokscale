@@ -16,6 +16,7 @@
 > | [<img alt="GitHub Follow" src="https://img.shields.io/github/followers/junhoyeo?style=flat-square&logo=github&labelColor=black&color=24292f" width="156px" />](https://github.com/junhoyeo) | 在 GitHub 上关注 [@junhoyeo](https://github.com/junhoyeo) 获取更多项目。涉及 AI、基础设施等各个领域。 |
 > | :-----| :----- |
 > [<img alt="Discord link" src="https://img.shields.io/discord/1480206352755458110?color=5865F2&label=discord&labelColor=black&logo=discord&logoColor=white&style=flat-square" width="156px" />](https://discord.gg/h6DUGWdBbm) | 加入我们的 [Discord](https://discord.gg/h6DUGWdBbm) — 与全球顶尖的开发者一起交流。 |
+> [<img alt="X follow" src="https://img.shields.io/badge/follow-%40Tokscale-000000?style=flat-square&logo=x&logoColor=white&labelColor=black" width="156px" />](https://x.com/Tokscale) | 在 X 上关注 [@Tokscale](https://x.com/Tokscale)，获取版本发布和最新动态。 |
 > [<img alt="Sponsor Tokscale" src="https://img.shields.io/badge/sponsor-Tokscale-EA4AAA?style=flat-square&logo=githubsponsors&logoColor=white&labelColor=black" width="156px" />](https://github.com/sponsors/junhoyeo) | 通过 [GitHub Sponsors](https://github.com/sponsors/junhoyeo) 支持 Tokscale 的持续开发。 |
 
 <div align="center">
@@ -44,6 +45,10 @@
 |:---:|:---:|
 | ![TUI Daily Summary](.github/assets/tui-daily.png) | ![TUI Stats](.github/assets/tui-stats.png) | 
 
+| Session Details | Hourly |
+|:---:|:---:|
+| ![TUI Session Details](.github/assets/tui-sessions.png) | ![TUI Hourly](.github/assets/tui-hourly.png) |
+
 | Frontend (3D Contributions Graph) | Wrapped 2025 |
 |:---:|:---:|
 | <a href="https://tokscale.ai"><img alt="Frontend (3D Contributions Graph)" src=".github/assets/frontend-contributions-graph.png" width="700px" /></a> | <a href="#wrapped-2025"><img alt="Wrapped 2025" src=".github/assets/wrapped-2025-agents.png" width="700px" /></a> |
@@ -66,7 +71,7 @@
 | <img width="48px" src=".github/assets/client-hermes.png" alt="Hermes Agent" /> | [Hermes Agent](https://github.com/NousResearch/hermes-agent) | `$HERMES_HOME/state.db` 和 `$HERMES_HOME/profiles/*/state.db`（回退：`~/.hermes/...`） |
 | <img width="48px" src=".github/assets/client-gemini.png" alt="Gemini" /> | [Gemini CLI](https://github.com/google-gemini/gemini-cli) | `$GEMINI_CLI_HOME/tmp/*/chats/*.json`（回退：`~/.gemini/tmp/*/chats/*.json`） |
 | <img width="48px" src=".github/assets/client-cursor.jpg" alt="Cursor" /> | [Cursor IDE](https://cursor.com/) | Cursor API 用量缓存于 `~/.config/tokscale/cursor-cache/usage*.json`（仍会读取旧版 `usage*.csv` 缓存；桌面端自动登录或粘贴 cookie；而非 `~/.cursor`） |
-| <img width="48px" src=".github/assets/client-amp.png" alt="Amp" /> | [Amp (AmpCode)](https://ampcode.com/) | `~/.local/share/amp/threads/` |
+| <img width="48px" src=".github/assets/client-amp.png" alt="Amp" /> | [Amp (AmpCode)](https://ampcode.com/) | `~/.config/tokscale/amp-cache/threads/` (`tokscale amp sync`) |
 | <img width="48px" src=".github/assets/client-codebuff.png" alt="Codebuff" /> | [Codebuff](https://codebuff.com/) | `~/.config/manicode/`（+ `manicode-dev`、`manicode-staging`；可通过 `CODEBUFF_DATA_DIR` 覆盖） |
 | <img width="48px" src=".github/assets/client-freebuff.png" alt="Freebuff" /> | [Freebuff](https://github.com/CodebuffAI/freebuff) | 与 Codebuff 共用 `~/.config/manicode/`（同一运行时）；令牌消耗从转录估算（无本地用量；可通过 `FREEBUFF_DATA_DIR` 覆盖） |
 | <img width="48px" src=".github/assets/client-droid.png" alt="Droid" /> | [Droid (Factory Droid)](https://factory.ai/) | `~/.factory/sessions/` |
@@ -609,7 +614,7 @@ tokscale autosubmit disable
 
 ### Cursor IDE 命令
 
-Cursor IDE 使用 Cursor 的 usage-events API。Tokscale 把当前账户的导出缓存在 `~/.config/tokscale/cursor-cache/usage.json`，其他账户缓存在 `usage.<account>.json`。对于尚无 JSON 缓存的账户，旧版本的 `usage.csv` 仍会被读取；一次完整同步会把它移到 `cursor-cache/archive/`，避免和 JSON 重复计算。Tokscale **不会**解析 `~/.cursor` 下的 Cursor Agent CLI 本地会话，也不会把桌面端 SQLite 当作用量账本。
+Cursor IDE 使用 Cursor 的 usage-events API。当前账户缓存在 `~/.config/tokscale/cursor-cache/usage.json`，其他账户使用 `usage.account-<sha256-of-exact-account-id>.json`，并记录所有者元数据。无法确认所有者的旧 JSON/CSV 会在同步或切换账户前保存在 `cursor-cache/archive/`。Tokscale 不解析本地 `~/.cursor` 记录，也不把桌面端 SQLite DB 当作用量账本。
 
 本机已安装并登录 Cursor 桌面端时，如果还没有已保存的 Cursor 登录，报告、submit 和 wrapped 可以从 `state.vscdb` 导入 `cursorAuth/accessToken`。wrapped 仅在请求的客户端包含 Cursor 时导入。用量缓存仍新鲜时，报告会跳过同步。每次实际同步时，包括显式运行 `tokscale cursor sync`，都会在桌面会话可用时刷新其令牌，并可能将活动账号切换到该桌面登录。缺少桌面会话时，已保存的登录仍可使用。用量数据仍只来自 Cursor 的 usage-events API，而不是本地 `~/.cursor` 记录。
 
@@ -661,9 +666,9 @@ tokscale cursor logout --all
 tokscale cursor logout --all --purge-cache
 ```
 
-**凭据存储**：Cursor 账户保存到 `~/.config/tokscale/cursor-credentials.json`。使用量数据缓存在 `~/.config/tokscale/cursor-cache/`（活动账户使用 `usage.json`，其他账户使用 `usage.<account>.json`）。
+**凭据存储**：Cursor 账户保存到 `~/.config/tokscale/cursor-credentials.json`。使用量数据缓存在 `~/.config/tokscale/cursor-cache/`（活动账户使用 `usage.json`，其他账户使用 `usage.account-<sha256-of-exact-account-id>.json`）。
 
-默认情况下，tokscale 会 **合并统计所有已保存 Cursor 账户的使用量**（`cursor-cache/usage*.json`）。对于尚无 JSON 缓存的账户，仍会读取旧版 Tokscale 生成的旧格式 CSV 缓存（`usage.csv`、`usage.<account>.csv`）；该账户下次完整同步成功后，会写入 JSON 缓存，并将 CSV 移动到 `cursor-cache/archive/`。
+默认合计所有已保存 Cursor 账户的 `cursor-cache/usage*.json`。文件名使用精确账户 ID 的 SHA-256，并验证所有者，避免旧文件名冲突导致共享历史或同步进度。无法确认所有者的旧 JSON/CSV 会按原始字节和文件名保存在 `cursor-cache/archive/` 内的唯一目录中，然后各账户独立从头获取。备份不参与报告，获取失败后仍可恢复；备份失败会在覆盖前停止。迁移前的离线报告仍可读取旧缓存。同步获取新用量及最新有效事件前一小时内的更正，并保留更旧的记录。超时的获取不会写入缓存，已有缓存保持不变，避免下次同步跳过未完成的区间。
 
 登出时，tokscale 会将缓存的历史记录移动到 `cursor-cache/archive/`（因此不会参与合并统计）。如需彻底删除缓存，请使用 `--purge-cache`。
 
@@ -1495,7 +1500,7 @@ AI 编程工具将会话数据存储在跨平台位置。大多数工具在所�
 | Copilot CLI | `~/.copilot/session-store.db`, `~/.copilot/otel/`, `~/.copilot/data.db` | `%USERPROFILE%\.copilot\session-store.db`, `%USERPROFILE%\.copilot\otel\`, `%USERPROFILE%\.copilot\data.db` | CLI 用量事件来自 `session-store.db`（无需 OTEL）；同时自动采集 `COPILOT_OTEL_FILE_EXPORTER_PATH` 和桌面端 `data.db` |
 | Hermes Agent | `~/.hermes/` | `%USERPROFILE%\.hermes\` | 可通过 `HERMES_HOME` 环境变量配置（[源码](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/developer-guide/session-storage.md)） |
 | Gemini CLI | `~/.gemini/` | `%USERPROFILE%\.gemini\` | 可通过 `GEMINI_CLI_HOME` 环境变量配置 |
-| Amp | `~/.local/share/amp/` | `%USERPROFILE%\.local\share\amp\` | 与 OpenCode 一样使用 `xdg-basedir` |
+| Amp | `~/.config/tokscale/amp-cache/`（+ 旧版 `~/.local/share/amp/`） | `%APPDATA%\tokscale\amp-cache\`（+ 旧版 `%USERPROFILE%\.local\share\amp\`） | 通过 `tokscale amp sync` 同步；旧版路径与 OpenCode 一样使用 `xdg-basedir` |
 | Cursor | API 同步 | API 同步 | 通过 API 获取并缓存为 `usage*.json`（仍会读取旧版 `usage*.csv` 缓存）；桌面端自动登录仅读取 `state.vscdb` 认证；不解析本地 `~/.cursor` 会话数据 |
 | Droid | `~/.factory/` | `%USERPROFILE%\.factory\` | 所有平台使用相同路径 |
 | Pi | `~/.pi/` | `%USERPROFILE%\.pi\` | 所有平台使用相同路径 |

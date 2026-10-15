@@ -16,6 +16,7 @@
 > | [<img alt="GitHub Follow" src="https://img.shields.io/github/followers/junhoyeo?style=flat-square&logo=github&labelColor=black&color=24292f" width="156px" />](https://github.com/junhoyeo) | GitHub에서 [@junhoyeo](https://github.com/junhoyeo)를 팔로우하고 더 많은 프로젝트를 만나보세요. AI, 인프라 등 다양한 분야를 다룹니다. |
 > | :-----| :----- |
 > [<img alt="Discord link" src="https://img.shields.io/discord/1480206352755458110?color=5865F2&label=discord&labelColor=black&logo=discord&logoColor=white&style=flat-square" width="156px" />](https://discord.gg/h6DUGWdBbm) | [Discord](https://discord.gg/h6DUGWdBbm)에서 함께해요 — 세계 최고의 바이버들과 어울리세요. |
+> [<img alt="X follow" src="https://img.shields.io/badge/follow-%40Tokscale-000000?style=flat-square&logo=x&logoColor=white&labelColor=black" width="156px" />](https://x.com/Tokscale) | X에서 [@Tokscale](https://x.com/Tokscale)을 팔로우하고 릴리스 소식과 업데이트를 받아보세요. |
 > [<img alt="Sponsor Tokscale" src="https://img.shields.io/badge/sponsor-Tokscale-EA4AAA?style=flat-square&logo=githubsponsors&logoColor=white&labelColor=black" width="156px" />](https://github.com/sponsors/junhoyeo) | [GitHub Sponsors](https://github.com/sponsors/junhoyeo)를 통해 Tokscale의 지속적인 개발을 후원해 주세요. |
 
 <div align="center">
@@ -43,6 +44,10 @@
 |:---:|:---:|
 | ![TUI Daily Summary](.github/assets/tui-daily.png) | ![TUI Stats](.github/assets/tui-stats.png) | 
 
+| Session Details | Hourly |
+|:---:|:---:|
+| ![TUI Session Details](.github/assets/tui-sessions.png) | ![TUI Hourly](.github/assets/tui-hourly.png) |
+
 | Frontend (3D Contributions Graph) | Wrapped 2025 |
 |:---:|:---:|
 | <a href="https://tokscale.ai"><img alt="Frontend (3D Contributions Graph)" src=".github/assets/frontend-contributions-graph.png" width="700px" /></a> | <a href="#wrapped-2025"><img alt="Wrapped 2025" src=".github/assets/wrapped-2025-agents.png" width="700px" /></a> |
@@ -65,7 +70,7 @@
 | <img width="48px" src=".github/assets/client-hermes.png" alt="Hermes Agent" /> | [Hermes Agent](https://github.com/NousResearch/hermes-agent) | `$HERMES_HOME/state.db` 및 `$HERMES_HOME/profiles/*/state.db` (폴백: `~/.hermes/...`) |
 | <img width="48px" src=".github/assets/client-gemini.png" alt="Gemini" /> | [Gemini CLI](https://github.com/google-gemini/gemini-cli) | `$GEMINI_CLI_HOME/tmp/*/chats/*.json` (폴백: `~/.gemini/tmp/*/chats/*.json`) |
 | <img width="48px" src=".github/assets/client-cursor.jpg" alt="Cursor" /> | [Cursor IDE](https://cursor.com/) | Cursor API 사용량을 `~/.config/tokscale/cursor-cache/usage*.json`에 캐싱 (레거시 `usage*.csv` 캐시도 계속 읽음; 데스크톱 자동 로그인 또는 쿠키 붙여넣기; `~/.cursor` 아님) |
-| <img width="48px" src=".github/assets/client-amp.png" alt="Amp" /> | [Amp (AmpCode)](https://ampcode.com/) | `~/.local/share/amp/threads/` |
+| <img width="48px" src=".github/assets/client-amp.png" alt="Amp" /> | [Amp (AmpCode)](https://ampcode.com/) | `~/.config/tokscale/amp-cache/threads/` (`tokscale amp sync`) |
 | <img width="48px" src=".github/assets/client-codebuff.png" alt="Codebuff" /> | [Codebuff](https://codebuff.com/) | `~/.config/manicode/` (+ `manicode-dev`, `manicode-staging`; `CODEBUFF_DATA_DIR`로 오버라이드 가능) |
 | <img width="48px" src=".github/assets/client-freebuff.png" alt="Freebuff" /> | [Freebuff](https://github.com/CodebuffAI/freebuff) | Codebuff와 동일한 `~/.config/manicode/` 공유 (동일 런타임); 토큰 사용량은 트랜스크립트에서 추정 (로컬 사용량 없음; `FREEBUFF_DATA_DIR`로 오버라이드 가능) |
 | <img width="48px" src=".github/assets/client-droid.png" alt="Droid" /> | [Droid (Factory Droid)](https://factory.ai/) | `~/.factory/sessions/` |
@@ -609,7 +614,7 @@ tokscale autosubmit disable
 
 ### Cursor IDE 명령어
 
-Cursor IDE 지원은 Cursor의 usage-events API를 사용합니다. Tokscale은 활성 계정을 `~/.config/tokscale/cursor-cache/usage.json`에, 나머지 계정을 `usage.<account>.json`에 캐시합니다. 이전 버전의 `usage.csv`는 해당 계정에 JSON 캐시가 아직 없을 때 읽고, 전체 동기화가 끝나면 `cursor-cache/archive/`로 옮겨 JSON과 두 번 세지 않습니다. Tokscale은 `~/.cursor` 아래의 로컬 Cursor Agent CLI 상태를 파싱하지 않으며, 데스크톱 SQLite DB를 사용량 원장으로 취급하지도 않습니다.
+Cursor IDE는 Cursor의 usage-events API를 사용합니다. 활성 계정은 `~/.config/tokscale/cursor-cache/usage.json`에, 다른 계정은 `usage.account-<sha256-of-exact-account-id>.json`에 소유자 메타데이터와 함께 저장합니다. 소유자를 확인할 수 없는 이전 JSON/CSV는 동기화나 계정 변경 전에 `cursor-cache/archive/`에 보관합니다. Tokscale은 로컬 `~/.cursor` 기록을 파싱하거나 데스크톱 SQLite DB를 사용량 원장으로 취급하지 않습니다.
 
 Cursor 데스크톱 앱이 설치되어 있고 로그인되어 있으면, 저장된 Cursor 로그인이 없을 때 리포트, submit, wrapped가 `state.vscdb`의 `cursorAuth/accessToken`을 가져올 수 있습니다. wrapped는 요청한 클라이언트에 Cursor가 포함된 경우에만 가져옵니다. 사용량 캐시가 아직 최신이면 리포트는 동기화를 건너뜁니다. 명시적인 `tokscale cursor sync`를 포함해 동기화가 실행될 때마다 사용 가능한 데스크톱 토큰을 갱신하며, 활성 계정이 해당 데스크톱 로그인으로 전환될 수 있습니다. 데스크톱 세션이 없어도 저장된 로그인은 계속 사용할 수 있습니다. 사용량 행은 Cursor usage-events API에서만 가져오며, 로컬 `~/.cursor` 기록은 파싱하지 않습니다.
 
@@ -664,7 +669,7 @@ tokscale cursor logout --all
 tokscale cursor logout --all --purge-cache
 ```
 
-기본적으로 Tokscale은 `cursor-cache/usage*.json`을 읽어 저장된 모든 Cursor 계정의 사용량을 합산합니다. 활성 계정은 `usage.json`에 동기화되고, 추가 계정은 `usage.<account>.json`에 동기화됩니다. 이전 버전의 Tokscale이 만든 레거시 CSV 캐시(`usage.csv`, `usage.<account>.csv`)도 아직 JSON 캐시가 없는 계정이라면 계속 읽습니다. 해당 계정이 다음에 전체 동기화에 성공하면 JSON 캐시를 쓰고 CSV는 `cursor-cache/archive/`로 옮깁니다.
+기본적으로 저장된 모든 Cursor 계정의 `cursor-cache/usage*.json`을 합산합니다. 파일명은 정확한 계정 ID의 SHA-256을 사용하며 소유자를 검증하므로 이전 파일명이 충돌해도 기록이나 동기화 진행 상태를 공유하지 않습니다. 소유자를 확인할 수 없는 이전 JSON/CSV는 원래 바이트와 파일명 그대로 `cursor-cache/archive/` 안의 고유 디렉터리에 보관하고 각 계정을 처음부터 가져옵니다. 백업은 리포트에서 제외되며 가져오기가 실패해도 복구할 수 있습니다. 보관 실패 시 덮어쓰기 전에 중단합니다. 이전 캐시는 이 전환 전까지 오프라인 리포트에서 읽을 수 있습니다. 새로운 사용량과 최신 유효 이벤트의 1시간 전까지의 정정 내역을 가져오고 더 오래된 기록은 유지합니다. 시간 초과 시 가져온 페이지를 저장하지 않고 기존 캐시를 유지하여 다음 동기화에서 누락 구간을 건너뛰지 않게 합니다.
 
 로그아웃 시 Tokscale은 캐시된 사용량을 `cursor-cache/archive/`로 옮겨 더 이상 합산되지 않도록 합니다. 캐시된 사용량을 대신 삭제하려면 `--purge-cache`를 사용하세요.
 
@@ -1496,7 +1501,7 @@ AI 코딩 도구들은 크로스 플랫폼 위치에 세션 데이터를 저장�
 | Copilot CLI | `~/.copilot/session-store.db`, `~/.copilot/otel/`, `~/.copilot/data.db` | `%USERPROFILE%\.copilot\session-store.db`, `%USERPROFILE%\.copilot\otel\`, `%USERPROFILE%\.copilot\data.db` | CLI 사용량 이벤트는 `session-store.db`에서 수집 (OTEL 불필요); `COPILOT_OTEL_FILE_EXPORTER_PATH`와 Desktop `data.db`도 자동 수집 |
 | Hermes Agent | `~/.hermes/` | `%USERPROFILE%\.hermes\` | `HERMES_HOME` 환경변수로 설정 가능 ([소스](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/developer-guide/session-storage.md)) |
 | Gemini CLI | `~/.gemini/` | `%USERPROFILE%\.gemini\` | `GEMINI_CLI_HOME` 환경변수로 설정 가능 |
-| Amp | `~/.local/share/amp/` | `%USERPROFILE%\.local\share\amp\` | OpenCode와 동일하게 `xdg-basedir` 사용 |
+| Amp | `~/.config/tokscale/amp-cache/` (+ 레거시 `~/.local/share/amp/`) | `%APPDATA%\tokscale\amp-cache\` (+ 레거시 `%USERPROFILE%\.local\share\amp\`) | `tokscale amp sync`로 동기화. 레거시 경로는 OpenCode와 동일하게 `xdg-basedir` 사용 |
 | Cursor | API 동기화 | API 동기화 | API로 가져와 `usage*.json`으로 캐시(레거시 `usage*.csv` 캐시도 계속 읽음); 데스크톱 자동 로그인은 `state.vscdb` 인증만 읽음; 로컬 `~/.cursor` 세션 데이터는 파싱하지 않음 |
 | Droid | `~/.factory/` | `%USERPROFILE%\.factory\` | 모든 플랫폼에서 동일한 경로 |
 | Pi | `~/.pi/` | `%USERPROFILE%\.pi\` | 모든 플랫폼에서 동일한 경로 |

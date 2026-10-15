@@ -1017,6 +1017,37 @@ fn sandbox_config_dir(tmp: &Path) -> std::path::PathBuf {
     tmp.join(".config").join("tokscale")
 }
 
+/// Keep submit fixtures from enumerating real desktop processes. `submit` now
+/// refreshes Antigravity before scanning; HOME alone cannot contain `ps` or
+/// PowerShell discovery. The child executes only this fixture-owned shim, which
+/// reports no candidate processes on every supported platform.
+fn discovery_shim_path(tmp: &Path) -> std::ffi::OsString {
+    let bin = tmp.join(".tokscale-test-bin");
+    fs::create_dir_all(&bin).unwrap();
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let ps = bin.join("ps");
+        fs::write(&ps, "#!/bin/sh\nprintf 'PID PPID COMMAND\\n'\n").unwrap();
+        fs::set_permissions(&ps, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[cfg(windows)]
+    {
+        // `Command::new("powershell")` resolves this through PATHEXT before
+        // the host PowerShell. Its JSON is the empty process collection expected
+        // by `parse_windows_process_candidates`.
+        fs::write(bin.join("powershell.cmd"), "@echo []\r\n").unwrap();
+    }
+
+    let mut paths = vec![bin];
+    paths.extend(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    ));
+    std::env::join_paths(paths).unwrap()
+}
+
 fn cmd_with_home(tmp: &Path) -> Command {
     let mut cmd = cargo_bin_cmd!("tokscale");
     cmd.env("HOME", tmp)
@@ -1024,6 +1055,7 @@ fn cmd_with_home(tmp: &Path) -> Command {
         .env("XDG_DATA_HOME", tmp.join(".local/share"))
         .env("XDG_CACHE_HOME", tmp.join(".cache"))
         .env("TOKSCALE_CONFIG_DIR", sandbox_config_dir(tmp))
+        .env("PATH", discovery_shim_path(tmp))
         // `pricing` intentionally bypasses TOKSCALE_PRICING_CACHE_ONLY; the
         // loopback proxies below are the offline guarantee for every command.
         .env("TOKSCALE_PRICING_CACHE_ONLY", "1")
@@ -1620,7 +1652,40 @@ fn write_jcode_session(base: &Path) {
 fn write_cursor_usage_cache(base: &Path) {
     let cache_dir = base.join(".config/tokscale/cursor-cache");
     fs::create_dir_all(&cache_dir).unwrap();
-    fs::write(cache_dir.join("usage.json"), r#"{"usageEventsDisplay":[]}"#).unwrap();
+    fs::write(
+        cache_dir.join("usage.json"),
+        r#"{"_tokscale":{"version":1,"accountId":"active-account"},"usageEventsDisplay":[]}"#,
+    )
+    .unwrap();
+}
+
+fn write_cursor_desktop_session(base: &Path) {
+    use base64::Engine;
+    let payload =
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(br#"{"sub":"auth0|user_DESKTOP"}"#);
+    let token = format!("eyJhbGciOiJub25lIn0.{payload}.sig");
+    let relative = if cfg!(target_os = "macos") {
+        "Library/Application Support/Cursor/User/globalStorage/state.vscdb"
+    } else if cfg!(target_os = "windows") {
+        "AppData/Roaming/Cursor/User/globalStorage/state.vscdb"
+    } else {
+        ".config/Cursor/User/globalStorage/state.vscdb"
+    };
+    let path = base.join(relative);
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let connection = rusqlite::Connection::open(path).unwrap();
+    connection
+        .execute(
+            "CREATE TABLE ItemTable (key TEXT PRIMARY KEY, value TEXT)",
+            [],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO ItemTable (key, value) VALUES (?1, ?2)",
+            rusqlite::params!["cursorAuth/accessToken", token],
+        )
+        .unwrap();
 }
 
 fn write_cursor_credentials(base: &Path) {
@@ -3342,12 +3407,67 @@ fn test_graph_cursor_explicit_missing_cache_reports_setup_warning_text() {
 }
 
 #[test]
+fn test_cursor_desktop_session_is_imported_before_graph_and_submit_sync() {
+    for args in [
+        vec!["graph", "--client", "cursor", "--no-spinner"],
+        vec!["--no-spinner", "submit", "--client", "cursor", "--dry-run"],
+    ] {
+        let tmp = create_empty_fixture_dir();
+        write_cursor_desktop_session(tmp.path());
+        let output = cmd_with_home(tmp.path())
+            .env("APPDATA", tmp.path().join("AppData/Roaming"))
+            .env("TOKSCALE_API_TOKEN", "test-token")
+            .args(&args)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{args:?}: {output:?}");
+        let credentials: serde_json::Value = serde_json::from_slice(
+            &fs::read(tmp.path().join(".config/tokscale/cursor-credentials.json"))
+                .expect("a report must discover the signed-in desktop session without login"),
+        )
+        .unwrap();
+        assert_eq!(credentials["activeAccountId"], "user_DESKTOP");
+        assert!(
+            tmp.path()
+                .join(".config/tokscale/cursor-cache/usage.last-sync-attempt")
+                .exists(),
+            "the imported session must reach sync even though the offline proxy refuses it: {output:?}"
+        );
+    }
+}
+
+#[test]
+fn test_cursor_desktop_session_is_not_imported_for_excluded_or_external_reports() {
+    for external in [false, true] {
+        let tmp = create_empty_fixture_dir();
+        write_cursor_desktop_session(tmp.path());
+        let mut cmd = cmd_with_home(tmp.path());
+        cmd.env("APPDATA", tmp.path().join("AppData/Roaming"));
+        cmd.args(["graph", "--no-spinner", "--client"]);
+        if external {
+            cmd.arg("cursor").arg("--home").arg(tmp.path());
+        } else {
+            cmd.arg("opencode");
+        }
+        cmd.assert().success();
+        assert!(!tmp
+            .path()
+            .join(".config/tokscale/cursor-credentials.json")
+            .exists());
+    }
+}
+
+#[test]
 fn test_graph_fresh_cursor_cache_skips_auto_sync_warning() {
     let tmp = create_empty_fixture_dir();
+    write_cursor_desktop_session(tmp.path());
     write_cursor_credentials(tmp.path());
     write_cursor_usage_cache(tmp.path());
 
+    let credentials = tmp.path().join(".config/tokscale/cursor-credentials.json");
+    let saved_credentials = fs::read(&credentials).unwrap();
     let output = cmd_with_home(tmp.path())
+        .env("APPDATA", tmp.path().join("AppData/Roaming"))
         .env("HTTPS_PROXY", "http://127.0.0.1:9")
         .env("HTTP_PROXY", "http://127.0.0.1:9")
         .env("ALL_PROXY", "http://127.0.0.1:9")
@@ -3365,6 +3485,66 @@ fn test_graph_fresh_cursor_cache_skips_auto_sync_warning() {
         !stderr.contains("Cursor sync failed") && !stderr.contains("Cursor sync warning"),
         "fresh Cursor cache should skip implicit graph sync; stderr: {stderr}"
     );
+    assert_eq!(
+        fs::read(credentials).unwrap(),
+        saved_credentials,
+        "a fresh report must retain its saved login even when the desktop account differs"
+    );
+}
+
+#[test]
+fn test_cursor_logout_all_purge_removes_cache_without_credentials() {
+    let tmp = create_empty_fixture_dir();
+    let current = tmp.path().join(".config/tokscale/cursor-cache");
+    let legacy = tmp.path().join(".tokscale/cursor-cache");
+    fs::create_dir_all(current.join("archive/old")).unwrap();
+    fs::create_dir_all(&legacy).unwrap();
+    fs::write(current.join("archive/old/usage.json"), b"archived usage").unwrap();
+    fs::write(legacy.join("usage.csv"), b"legacy usage").unwrap();
+
+    let output = cmd_with_home(tmp.path())
+        .args(["cursor", "logout", "--all", "--purge-cache"])
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!current.exists());
+    assert!(!legacy.exists());
+    assert!(String::from_utf8_lossy(&output.stdout).contains("Purged all Cursor cache data"));
+}
+
+#[test]
+fn test_graph_preserves_unowned_cursor_cache_when_refetch_fails() {
+    let tmp = create_empty_fixture_dir();
+    write_cursor_credentials(tmp.path());
+    let cache_dir = tmp.path().join(".config/tokscale/cursor-cache");
+    fs::create_dir_all(&cache_dir).unwrap();
+    let legacy = r#"{"usageEventsDisplay":[]}"#;
+    fs::write(cache_dir.join("usage.json"), legacy).unwrap();
+    let output = cmd_with_home(tmp.path())
+        .env("HTTPS_PROXY", "http://127.0.0.1:9")
+        .env("HTTP_PROXY", "http://127.0.0.1:9")
+        .env("ALL_PROXY", "http://127.0.0.1:9")
+        .args(["graph", "--client", "cursor", "--no-spinner"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("preserved 1 cache file(s)"), "{stderr}");
+    assert!(stderr.contains("Cursor sync failed"), "{stderr}");
+    assert!(!cache_dir.join("usage.json").exists());
+    let archives: Vec<_> = fs::read_dir(cache_dir.join("archive")).unwrap().collect();
+    assert_eq!(archives.len(), 1);
+    let original = archives[0].as_ref().unwrap().path().join("usage.json");
+    assert_eq!(fs::read_to_string(original).unwrap(), legacy);
 }
 
 #[test]
@@ -3480,6 +3660,7 @@ fn test_submit_tip_recommends_only_the_client_filter() {
         .stdout(predicate::str::contains(
             "Tip: narrow the scan with `--client <id>` for a faster submit.",
         ))
+        .stdout(predicate::str::contains("Syncing Antigravity usage data...").not())
         .stdout(predicate::str::is_match(r"Tip:.*--since").unwrap().not());
 }
 
@@ -7237,20 +7418,27 @@ fn test_codex_compressed_session_reports_usage() {
     )
     .unwrap();
 
-    let output = cmd_with_home(tmp.path())
-        .args(["--client", "codex", "--json", "--no-spinner"])
-        .output()
-        .unwrap();
+    // Check a cold archive scan, an uncompressed duplicate, and the warm cache.
+    for scan in 0..3 {
+        if scan == 1 {
+            fs::write(sessions.join("fixture.jsonl"), content).unwrap();
+        }
+        let output = cmd_with_home(tmp.path())
+            .args(["--client", "codex", "--json", "--no-spinner"])
+            .output()
+            .unwrap();
 
-    assert!(
-        output.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+        assert!(
+            output.status.success(),
+            "stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
 
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(json["totalInput"].as_i64().unwrap(), 110);
-    assert_eq!(json["totalCacheRead"].as_i64().unwrap(), 30);
-    assert_eq!(json["totalOutput"].as_i64().unwrap(), 10);
-    assert_eq!(json["totalMessages"].as_i64().unwrap(), 1);
+        let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(json["totalInput"].as_i64().unwrap(), 110);
+        assert_eq!(json["totalCacheRead"].as_i64().unwrap(), 30);
+        assert_eq!(json["totalOutput"].as_i64().unwrap(), 10);
+        assert_eq!(json["totalMessages"].as_i64().unwrap(), 1);
+        assert_eq!(json["entries"][0]["reasoning"].as_i64().unwrap(), 10);
+    }
 }

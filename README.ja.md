@@ -16,6 +16,7 @@
 > | [<img alt="GitHub Follow" src="https://img.shields.io/github/followers/junhoyeo?style=flat-square&logo=github&labelColor=black&color=24292f" width="156px" />](https://github.com/junhoyeo) | GitHubで[@junhoyeo](https://github.com/junhoyeo)をフォローして、他のプロジェクトもチェックしてください。AI、インフラ、その他様々な分野で開発しています。 |
 > | :-----| :----- |
 > [<img alt="Discord link" src="https://img.shields.io/discord/1480206352755458110?color=5865F2&label=discord&labelColor=black&logo=discord&logoColor=white&style=flat-square" width="156px" />](https://discord.gg/h6DUGWdBbm) | [Discord](https://discord.gg/h6DUGWdBbm)に参加しよう — 世界最高のバイバーたちと一緒に。 |
+> [<img alt="X follow" src="https://img.shields.io/badge/follow-%40Tokscale-000000?style=flat-square&logo=x&logoColor=white&labelColor=black" width="156px" />](https://x.com/Tokscale) | Xで[@Tokscale](https://x.com/Tokscale)をフォローして、リリース情報やアップデートを受け取りましょう。 |
 > [<img alt="Sponsor Tokscale" src="https://img.shields.io/badge/sponsor-Tokscale-EA4AAA?style=flat-square&logo=githubsponsors&logoColor=white&labelColor=black" width="156px" />](https://github.com/sponsors/junhoyeo) | [GitHub Sponsors](https://github.com/sponsors/junhoyeo)を通じて、Tokscaleの継続的な開発をご支援ください。 |
 
 <div align="center">
@@ -43,6 +44,10 @@
 |:---:|:---:|
 | ![TUI Daily Summary](.github/assets/tui-daily.png) | ![TUI Stats](.github/assets/tui-stats.png) | 
 
+| Session Details | Hourly |
+|:---:|:---:|
+| ![TUI Session Details](.github/assets/tui-sessions.png) | ![TUI Hourly](.github/assets/tui-hourly.png) |
+
 | Frontend (3D Contributions Graph) | Wrapped 2025 |
 |:---:|:---:|
 | <a href="https://tokscale.ai"><img alt="Frontend (3D Contributions Graph)" src=".github/assets/frontend-contributions-graph.png" width="700px" /></a> | <a href="#wrapped-2025"><img alt="Wrapped 2025" src=".github/assets/wrapped-2025-agents.png" width="700px" /></a> |
@@ -65,7 +70,7 @@
 | <img width="48px" src=".github/assets/client-hermes.png" alt="Hermes Agent" /> | [Hermes Agent](https://github.com/NousResearch/hermes-agent) | `$HERMES_HOME/state.db` および `$HERMES_HOME/profiles/*/state.db`（フォールバック: `~/.hermes/...`） |
 | <img width="48px" src=".github/assets/client-gemini.png" alt="Gemini" /> | [Gemini CLI](https://github.com/google-gemini/gemini-cli) | `$GEMINI_CLI_HOME/tmp/*/chats/*.json`（フォールバック: `~/.gemini/tmp/*/chats/*.json`） |
 | <img width="48px" src=".github/assets/client-cursor.jpg" alt="Cursor" /> | [Cursor IDE](https://cursor.com/) | Cursor API の使用量を `~/.config/tokscale/cursor-cache/usage*.json` にキャッシュ（旧形式の `usage*.csv` キャッシュも引き続き読み込み；デスクトップ自動ログインまたは Cookie 貼り付け；`~/.cursor` ではない） |
-| <img width="48px" src=".github/assets/client-amp.png" alt="Amp" /> | [Amp (AmpCode)](https://ampcode.com/) | `~/.local/share/amp/threads/` |
+| <img width="48px" src=".github/assets/client-amp.png" alt="Amp" /> | [Amp (AmpCode)](https://ampcode.com/) | `~/.config/tokscale/amp-cache/threads/` (`tokscale amp sync`) |
 | <img width="48px" src=".github/assets/client-codebuff.png" alt="Codebuff" /> | [Codebuff](https://codebuff.com/) | `~/.config/manicode/` (+ `manicode-dev`、`manicode-staging`; `CODEBUFF_DATA_DIR` でオーバーライド可能) |
 | <img width="48px" src=".github/assets/client-freebuff.png" alt="Freebuff" /> | [Freebuff](https://github.com/CodebuffAI/freebuff) | Codebuff と同じ `~/.config/manicode/` を共有（同一ランタイム）；トークン使用量はトランスクリプトから推定（ローカル使用量なし；`FREEBUFF_DATA_DIR` でオーバーライド可能） |
 | <img width="48px" src=".github/assets/client-droid.png" alt="Droid" /> | [Droid (Factory Droid)](https://factory.ai/) | `~/.factory/sessions/` |
@@ -613,7 +618,7 @@ tokscale autosubmit disable
 
 ### Cursor IDEコマンド
 
-Cursor IDE は Cursor の usage-events API を使います。Tokscale はアクティブアカウントを `~/.config/tokscale/cursor-cache/usage.json` に、その他のアカウントを `usage.<account>.json` にキャッシュします。古いバージョンの `usage.csv` は、そのアカウントに JSON キャッシュがまだない場合に読み、完全な同期が終わると `cursor-cache/archive/` に移して JSON と二重に数えません。Tokscale は `~/.cursor` 配下の Cursor Agent CLI ローカル状態を解析しません。また、デスクトップの SQLite DB を使用量台帳としては扱いません。
+Cursor IDE は Cursor の usage-events API を使います。アクティブアカウントは `~/.config/tokscale/cursor-cache/usage.json`、その他のアカウントは `usage.account-<sha256-of-exact-account-id>.json` に所有者メタデータ付きで保存します。所有者を確認できない旧 JSON/CSV は、同期やアカウント変更の前に `cursor-cache/archive/` に保管します。Tokscale は `~/.cursor` 配下のローカル記録を解析せず、デスクトップの SQLite DB を使用量台帳として扱いません。
 
 Cursor デスクトップアプリがインストール済みでサインイン済みの場合、保存済みの Cursor ログインがなければ、レポート、submit、wrapped は `state.vscdb` の `cursorAuth/accessToken` を取り込めます。wrapped は対象クライアントに Cursor が含まれる場合だけ取り込みます。使用量キャッシュが新しい間、レポートは同期をスキップします。明示的な `tokscale cursor sync` を含め、同期が実行されるたびに、利用可能なデスクトップトークンを更新し、そのデスクトップログインへアクティブアカウントを切り替えることがあります。デスクトップセッションがない場合も、保存済みログインは引き続き利用できます。使用量行は Cursor の usage-events API からのみ取得し、ローカルの `~/.cursor` トランスクリプトは解析しません。
 
@@ -665,9 +670,9 @@ tokscale cursor logout --all
 tokscale cursor logout --all --purge-cache
 ```
 
-**資格情報の保存**: Cursorアカウントは`~/.config/tokscale/cursor-credentials.json`に保存されます。使用量データは`~/.config/tokscale/cursor-cache/`にキャッシュされます（アクティブアカウントは`usage.json`、追加アカウントは`usage.<account>.json`）。
+**資格情報の保存**: Cursorアカウントは`~/.config/tokscale/cursor-credentials.json`に保存されます。使用量データは`~/.config/tokscale/cursor-cache/`にキャッシュされます（アクティブアカウントは`usage.json`、追加アカウントは`usage.account-<sha256-of-exact-account-id>.json`）。
 
-デフォルトでは、tokscale は **保存済みのすべての Cursor アカウントの使用量を合算**します（`cursor-cache/usage*.json`）。以前のバージョンの Tokscale が作成した旧形式の CSV キャッシュ（`usage.csv`、`usage.<account>.csv`）も、まだ JSON キャッシュがないアカウントについては引き続き読み込みます。そのアカウントの次回の完全な同期が成功すると、JSON キャッシュを書き込み、CSV を `cursor-cache/archive/` に移動します。
+デフォルトでは、保存済みの全 Cursor アカウントの `cursor-cache/usage*.json` を合算します。ファイル名は正確なアカウント ID の SHA-256 に基づき、所有者を検証するため、旧サニタイズ名が衝突しても履歴や同期位置を共有しません。所有者を確認できない旧 JSON/CSV は元のバイト列とファイル名のまま `cursor-cache/archive/` 内の一意のディレクトリに保管し、各アカウントを最初から取得します。バックアップはレポート対象外で、取得失敗後も復元可能です。保管に失敗した場合は上書き前に停止します。移行前のオフラインレポートでは旧キャッシュを引き続き読めます。新しい使用量と最新の有効イベントより 1 時間前までの訂正を取得し、それより古い履歴は保持します。タイムアウトした取得は保存せず、既存キャッシュを維持して未取得区間の飛び越しを防ぎます。
 
 ログアウト時はキャッシュされた履歴を `cursor-cache/archive/` に移動して保持します（そのため集計には含まれません）。完全に削除したい場合は `--purge-cache` を使ってください。
 
@@ -1495,7 +1500,7 @@ AIコーディングツールはクロスプラットフォームの場所にセ
 | Copilot CLI | `~/.copilot/session-store.db`, `~/.copilot/otel/`, `~/.copilot/data.db` | `%USERPROFILE%\.copilot\session-store.db`, `%USERPROFILE%\.copilot\otel\`, `%USERPROFILE%\.copilot\data.db` | CLI 使用イベントは `session-store.db` から取得（OTEL 不要）。`COPILOT_OTEL_FILE_EXPORTER_PATH` と Desktop `data.db` も自動取り込み |
 | Hermes Agent | `~/.hermes/` | `%USERPROFILE%\.hermes\` | `HERMES_HOME`環境変数で設定可能（[ソース](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/developer-guide/session-storage.md)） |
 | Gemini CLI | `~/.gemini/` | `%USERPROFILE%\.gemini\` | `GEMINI_CLI_HOME`環境変数で設定可能 |
-| Amp | `~/.local/share/amp/` | `%USERPROFILE%\.local\share\amp\` | OpenCodeと同様に`xdg-basedir`を使用 |
+| Amp | `~/.config/tokscale/amp-cache/`（+ レガシー `~/.local/share/amp/`） | `%APPDATA%\tokscale\amp-cache\`（+ レガシー `%USERPROFILE%\.local\share\amp\`） | `tokscale amp sync` で同期。レガシーパスは OpenCode と同様に `xdg-basedir` を使用 |
 | Cursor | API同期 | API同期 | Cursor API から取得したデータを `usage*.json` としてキャッシュ（旧形式の `usage*.csv` キャッシュも引き続き読み込み）；デスクトップ自動ログインは `state.vscdb` の認証のみ；ローカルの `~/.cursor` セッションデータは解析しない |
 | Droid | `~/.factory/` | `%USERPROFILE%\.factory\` | すべてのプラットフォームで同じパス |
 | Pi | `~/.pi/` | `%USERPROFILE%\.pi\` | すべてのプラットフォームで同じパス |

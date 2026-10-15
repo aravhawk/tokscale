@@ -15,6 +15,7 @@
 > | [<img alt="GitHub Follow" src="https://img.shields.io/github/followers/junhoyeo?style=flat-square&logo=github&labelColor=black&color=24292f" width="156px" />](https://github.com/junhoyeo) | Follow [@junhoyeo](https://github.com/junhoyeo) on GitHub for more projects. Hacking on AI, infra, and everything in between. |
 > | :-----| :----- |
 > [<img alt="Discord link" src="https://img.shields.io/discord/1480206352755458110?color=5865F2&label=discord&labelColor=black&logo=discord&logoColor=white&style=flat-square" width="156px" />](https://discord.gg/h6DUGWdBbm) | Come hang out in our [Discord](https://discord.gg/h6DUGWdBbm) — and surround yourself with the world's top-tier vibers. |
+> [<img alt="X follow" src="https://img.shields.io/badge/follow-%40Tokscale-000000?style=flat-square&logo=x&logoColor=white&labelColor=black" width="156px" />](https://x.com/Tokscale) | Follow [@Tokscale](https://x.com/Tokscale) on X for release notes and updates. |
 > [<img alt="Sponsor Tokscale" src="https://img.shields.io/badge/sponsor-Tokscale-EA4AAA?style=flat-square&logo=githubsponsors&logoColor=white&labelColor=black" width="156px" />](https://github.com/sponsors/junhoyeo) | Support Tokscale's continued development through [GitHub Sponsors](https://github.com/sponsors/junhoyeo). |
 
 <div align="center">
@@ -43,6 +44,10 @@
 |:---:|:---:|
 | ![TUI Daily Summary](.github/assets/tui-daily.png) | ![TUI Stats](.github/assets/tui-stats.png) | 
 
+| Session Details | Hourly |
+|:---:|:---:|
+| ![TUI Session Details](.github/assets/tui-sessions.png) | ![TUI Hourly](.github/assets/tui-hourly.png) |
+
 | Frontend (3D Contributions Graph) | Wrapped 2025 |
 |:---:|:---:|
 | <a href="https://tokscale.ai"><img alt="Frontend (3D Contributions Graph)" src=".github/assets/frontend-contributions-graph.png" width="700px" /></a> | <a href="#wrapped-2025"><img alt="Wrapped 2025" src=".github/assets/wrapped-2025-agents.png" width="700px" /></a> |
@@ -65,7 +70,7 @@
 | <img width="48px" src=".github/assets/client-hermes.png" alt="Hermes Agent" /> | [Hermes Agent](https://github.com/NousResearch/hermes-agent) | `$HERMES_HOME/state.db` and `$HERMES_HOME/profiles/*/state.db` (fallback: `~/.hermes/...`) |
 | <img width="48px" src=".github/assets/client-gemini.png" alt="Gemini" /> | [Gemini CLI](https://github.com/google-gemini/gemini-cli) | `$GEMINI_CLI_HOME/tmp/*/chats/*.json` (fallback: `~/.gemini/tmp/*/chats/*.json`) |
 | <img width="48px" src=".github/assets/client-cursor.jpg" alt="Cursor" /> | [Cursor IDE](https://cursor.com/) | Cursor API usage cached at `~/.config/tokscale/cursor-cache/usage*.json` (legacy `usage*.csv` caches are still read; desktop auto-login or cookie paste; not `~/.cursor`) |
-| <img width="48px" src=".github/assets/client-amp.png" alt="Amp" /> | [Amp (AmpCode)](https://ampcode.com/) | `~/.local/share/amp/threads/` |
+| <img width="48px" src=".github/assets/client-amp.png" alt="Amp" /> | [Amp (AmpCode)](https://ampcode.com/) | `~/.config/tokscale/amp-cache/threads/` (`tokscale amp sync`) |
 | <img width="48px" src=".github/assets/client-codebuff.png" alt="Codebuff" /> | [Codebuff](https://codebuff.com/) | `~/.config/manicode/` (+ `manicode-dev`, `manicode-staging`; override via `CODEBUFF_DATA_DIR`) |
 | <img width="48px" src=".github/assets/client-freebuff.png" alt="Freebuff" /> | [Freebuff](https://github.com/CodebuffAI/freebuff) | shares `~/.config/manicode/` with Codebuff (same runtime); token usage is estimated from the transcript (no local usage; override via `FREEBUFF_DATA_DIR`) |
 | <img width="48px" src=".github/assets/client-droid.png" alt="Droid" /> | [Droid (Factory Droid)](https://factory.ai/) | `~/.factory/sessions/` |
@@ -611,7 +616,7 @@ Scheduled runs are non-interactive: they never prompt for GitHub auth or star co
 
 ### Cursor IDE Commands
 
-Cursor IDE support uses Cursor's usage-events API. Tokscale caches that export at `~/.config/tokscale/cursor-cache/usage.json` for the active account and `usage.<account>.json` for each other account. A legacy `usage.csv` from older versions is read while that account has no JSON cache, and a complete sync moves it to `cursor-cache/archive/` so it is not counted beside the JSON. Tokscale does not parse local Cursor Agent CLI state under `~/.cursor`, and it does not treat the desktop SQLite DB as a usage ledger.
+Cursor IDE support uses Cursor's usage-events API. Tokscale caches usage at `~/.config/tokscale/cursor-cache/usage.json` for the active account and `usage.account-<sha256-of-exact-account-id>.json` for each other account, with verified ownership metadata. Unmarked legacy JSON/CSV caches are preserved in `cursor-cache/archive/` before sync or an account change; see the migration details below. Tokscale does not parse local Cursor Agent CLI state under `~/.cursor`, and it does not treat the desktop SQLite DB as a usage ledger.
 
 When the Cursor desktop app is installed and signed in, reports, submit, and wrapped can import `cursorAuth/accessToken` from `state.vscdb` when no Cursor login is saved yet. Wrapped only does this when Cursor is included in the requested clients. Reports skip syncing while the usage cache is fresh. Whenever a sync runs, including explicit `tokscale cursor sync`, it refreshes the desktop token when available and can switch the active account to that desktop login. A saved login remains usable when no desktop session is available. Usage rows still come only from Cursor's usage-events API, not from local `~/.cursor` transcripts.
 
@@ -666,7 +671,9 @@ tokscale cursor logout --all
 tokscale cursor logout --all --purge-cache
 ```
 
-By default, Tokscale aggregates usage across all saved Cursor accounts by reading `cursor-cache/usage*.json`. The active account syncs to `usage.json`; additional accounts sync to `usage.<account>.json`. Legacy CSV caches from older Tokscale versions (`usage.csv`, `usage.<account>.csv`) are still read for an account that has no JSON cache yet. The next complete sync of that account writes its JSON cache and moves the CSV to `cursor-cache/archive/`.
+By default, Tokscale aggregates usage across all saved Cursor accounts by reading `cursor-cache/usage*.json`. The active account syncs to `usage.json`; additional accounts use `usage.account-<sha256-of-exact-account-id>.json`. Each new cache records its account owner, so different IDs cannot share cached history or incremental sync progress merely because their sanitized names match.
+
+On the first sync or account change after upgrading, unmarked legacy JSON and CSV caches cannot prove which account owns their history. Tokscale preserves their original bytes and filenames in unique directories under `cursor-cache/archive/`, then fetches each account independently from the beginning. These backups are excluded from reports to avoid attributing ambiguous history to the wrong account. If a fetch fails, the backup remains recoverable; reauthenticate that account and sync again. Offline reports can still read legacy caches until this upgrade step runs. A backup failure stops the sync or account change before any cache is overwritten.
 
 When you log out, Tokscale moves cached usage to `cursor-cache/archive/` so it is no longer aggregated. Use `--purge-cache` to delete cached usage instead.
 
@@ -679,6 +686,8 @@ When you log out, Tokscale moves cached usage to `cursor-cache/archive/` so it i
   }
 }
 ```
+
+When an account has a JSON cache, Cursor sync fetches new usage plus the hour before that account's newest cached event. This bounded overlap refreshes recent billing corrections without downloading the full history on every report. Corrections older than this one-hour window remain as cached; older cached events are preserved, and a first sync without a usable cache still fetches the full history. Each account uses its own cache to determine the window. Only rows accepted by the report parser with positive timestamps no more than five minutes ahead of the sync's start time can set that window or stop pagination; other raw rows are preserved without advancing sync progress. A timed-out delta leaves the cache unchanged so the next sync cannot skip an incomplete interval.
 
 ### Antigravity Commands
 
@@ -1533,7 +1542,7 @@ AI coding tools store their session data in cross-platform locations. Most tools
 | Copilot CLI | `~/.copilot/session-store.db`, `~/.copilot/otel/`, `~/.copilot/data.db` | `%USERPROFILE%\.copilot\session-store.db`, `%USERPROFILE%\.copilot\otel\`, `%USERPROFILE%\.copilot\data.db` | CLI usage events from `session-store.db` (no OTEL required); also auto-ingests `COPILOT_OTEL_FILE_EXPORTER_PATH` and Desktop `data.db` |
 | Hermes Agent | `~/.hermes/` | `%USERPROFILE%\.hermes\` | Configurable via `HERMES_HOME` env var ([source](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/developer-guide/session-storage.md)) |
 | Gemini CLI | `~/.gemini/` | `%USERPROFILE%\.gemini\` | Configurable via `GEMINI_CLI_HOME` env var |
-| Amp | `~/.local/share/amp/` | `%USERPROFILE%\.local\share\amp\` | Uses `xdg-basedir` like OpenCode |
+| Amp | `~/.config/tokscale/amp-cache/` (+ legacy `~/.local/share/amp/`) | `%APPDATA%\tokscale\amp-cache\` (+ legacy `%USERPROFILE%\.local\share\amp\`) | Synced via `tokscale amp sync`; legacy path uses `xdg-basedir` like OpenCode |
 | Cursor | API sync | API sync | Data fetched from Cursor API and cached as `usage*.json` (legacy `usage*.csv` caches are still read); desktop auto-login reads auth only from `state.vscdb`; local `~/.cursor` session data is not parsed |
 | Droid | `~/.factory/` | `%USERPROFILE%\.factory\` | Same path on all platforms |
 | Pi | `~/.pi/` | `%USERPROFILE%\.pi\` | Same path on all platforms |
