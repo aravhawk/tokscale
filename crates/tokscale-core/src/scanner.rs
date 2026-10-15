@@ -3047,6 +3047,8 @@ fn prefer_cursor_json_over_csv(files: &mut Vec<PathBuf>) {
     struct ActiveAccount {
         #[serde(rename = "activeAccountId")]
         id: String,
+        #[serde(default)]
+        accounts: std::collections::HashMap<String, serde::de::IgnoredAny>,
     }
 
     let roots: HashSet<_> = json_stems.iter().filter_map(|path| path.parent()).collect();
@@ -3065,7 +3067,12 @@ fn prefer_cursor_json_over_csv(files: &mut Vec<PathBuf>) {
         let Some(active) = active else {
             continue;
         };
-        let account = crate::sessions::cursor::sanitize_account_id_for_filename(&active.id);
+        let Some(account) = crate::sessions::cursor::active_account_cache_stem(
+            &active.id,
+            active.accounts.keys().map(String::as_str),
+        ) else {
+            continue;
+        };
         let canonical = root.join("usage");
         let named = root.join(format!("usage.{account}"));
         if json_stems.contains(&canonical) || json_stems.contains(&named) {
@@ -3792,7 +3799,7 @@ mod tests {
                 cache.join(csv),
                 cache.join("usage.other.csv"),
             ];
-            fs::write(&credentials, r#"{"activeAccountId":" TEAM/USER ","accounts":{"ignored":{"sessionToken":"unused"}}}"#).unwrap();
+            fs::write(&credentials, r#"{"activeAccountId":" TEAM/USER ","accounts":{" TEAM/USER ":{"sessionToken":"unused"}}}"#).unwrap();
             let mut files = original.clone();
             prefer_cursor_json_over_csv(&mut files);
             assert_eq!(files, vec![cache.join(json), cache.join("usage.other.csv")]);
@@ -3801,6 +3808,7 @@ mod tests {
                 "not JSON",
                 r#"{"activeAccountId":"another-account"}"#,
                 r#"{"activeAccountId":" "}"#,
+                r#"{"activeAccountId":"TEAM/USER","accounts":{"TEAM/USER":{},"team-user":{}}}"#,
             ] {
                 fs::write(&credentials, metadata).unwrap();
                 let mut files = original.clone();

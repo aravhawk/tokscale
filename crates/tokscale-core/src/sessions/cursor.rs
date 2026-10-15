@@ -121,6 +121,24 @@ pub fn sanitize_account_id_for_filename(account_id: &str) -> String {
     }
 }
 
+/// Match an active alias only when no other saved account shares its legacy
+/// filename. Ambiguous stems must remain independent; existing names are kept.
+pub fn active_account_cache_stem<'a>(
+    active_id: &str,
+    account_ids: impl IntoIterator<Item = &'a str>,
+) -> Option<String> {
+    let stem = sanitize_account_id_for_filename(active_id);
+    let mut found_active = false;
+    for id in account_ids {
+        if id == active_id {
+            found_active = true;
+        } else if sanitize_account_id_for_filename(id) == stem {
+            return None;
+        }
+    }
+    found_active.then_some(stem)
+}
+
 fn account_id_from_cursor_cache_path(path: &Path) -> String {
     let file_name = path
         .file_name()

@@ -1685,13 +1685,21 @@ where
         let _ = fs::set_permissions(&cache_dir, fs::Permissions::from_mode(0o700));
     }
 
+    let alias_is_unambiguous = tokscale_core::sessions::cursor::active_account_cache_stem(
+        &store.active_account_id,
+        store.accounts.keys().map(String::as_str),
+    )
+    .is_some();
     let active_sanitized = sanitize_account_id_for_filename(&store.active_account_id);
     let dup_json = cache_dir.join(format!("usage.{active_sanitized}.json"));
     let dup_csv = cache_dir.join(format!("usage.{active_sanitized}.csv"));
-    let alias_reconcile_error =
+    let alias_reconcile_error = if alias_is_unambiguous {
         reconcile_active_json_alias(&cache_dir.join("usage.json"), &dup_json)
             .err()
-            .map(|error| format!("Failed to reconcile active Cursor JSON caches: {error:#}"));
+            .map(|error| format!("Failed to reconcile active Cursor JSON caches: {error:#}"))
+    } else {
+        None
+    };
     let mut total_rows = 0;
     let mut success_count = 0;
     let mut errors: Vec<String> = Vec::new();
@@ -1718,7 +1726,7 @@ where
                     // A leftover per-account file can hold history this walk
                     // never reached. Keep it and the active cache untouched
                     // until a complete fetch can safely reconcile both names.
-                    if dup_json.exists() || dup_csv.exists() {
+                    if alias_is_unambiguous && (dup_json.exists() || dup_csv.exists()) {
                         errors.push(format!(
                             "{account_id}: sync hit its time budget before the full history was collected; keeping existing cache"
                         ));
@@ -1733,7 +1741,9 @@ where
                 if incoming.events.is_empty()
                     && (file_path.exists()
                         || legacy_csv.exists()
-                        || (is_active && (dup_json.exists() || dup_csv.exists())))
+                        || (is_active
+                            && alias_is_unambiguous
+                            && (dup_json.exists() || dup_csv.exists())))
                 {
                     if is_active {
                         active_cache_complete = Some(false);
@@ -1811,7 +1821,9 @@ where
     // fallback only when a complete active cache is authoritative; partial or
     // empty responses must leave legacy CSV bytes available for recovery.
     let active_json = cache_dir.join("usage.json");
-    let can_retire_fallbacks = (dup_json.exists() || dup_csv.exists())
+    let can_retire_fallbacks = alias_is_unambiguous
+        && (alias_reconcile_error.is_none() || active_cache_complete == Some(true))
+        && (dup_json.exists() || dup_csv.exists())
         && active_json.exists()
         && active_cache_complete.unwrap_or_else(|| {
             fs::read_to_string(&active_json)
@@ -4193,6 +4205,134 @@ mod tests {
         assert_eq!(result.rows, 3);
         assert_eq!(fs::read_to_string(&active)?, complete);
         assert!(!alias.exists());
+        Ok(())
+    }
+
+    #[test]
+    fn test_failed_alias_write_and_failed_fetch_preserve_both_histories() -> Result<()> {
+        let home = TempDir::new()?;
+        save_credentials_store_in_home(
+            home.path(),
+            &CursorCredentialsStore {
+                version: 1,
+                active_account_id: "account".into(),
+                accounts: HashMap::from([(
+                    "account".into(),
+                    CursorCredentials {
+                        session_token: "test-token".into(),
+                        user_id: Some("account".into()),
+                        created_at: "2026-01-01T00:00:00Z".into(),
+                        expires_at: None,
+                        label: None,
+                    },
+                )]),
+            },
+        )?;
+        let cache = cursor_cache_dir(home.path());
+        fs::create_dir_all(&cache)?;
+        let active = cache.join("usage.json");
+        let alias = cache.join("usage.account.json");
+        let old = String::from_utf8(json_page(1, &[&json_event("a", "1788171994001")]))?;
+        let fallback = String::from_utf8(json_page(1, &[&json_event("b", "1788171994002")]))?;
+        fs::write(&active, &old)?;
+        fs::write(&alias, &fallback)?;
+        // A directory at the writer's staging path reliably rejects the union
+        // write on every platform, without relying on root/readonly semantics.
+        fs::create_dir(cache.join(format!(".tmp-usage.json-{}", std::process::id())))?;
+        let result =
+            tokio::runtime::Runtime::new()?
+                .block_on(sync_cursor_cache_with_fetcher_in_home(home.path(), |_| {
+                    std::future::ready(Err(anyhow::anyhow!("network down")))
+                }));
+        assert!(!result.synced);
+        assert_eq!(fs::read_to_string(&active)?, old);
+        assert_eq!(
+            fs::read_to_string(&alias)?,
+            fallback,
+            "uncommitted alias history must survive cleanup"
+        );
+        assert!(result.error.unwrap_or_default().contains("reconcile"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_active_cache_alias_matching_does_not_merge_a_colliding_account() -> Result<()> {
+        for extension in ["json", "csv"] {
+            let home = TempDir::new()?;
+            let accounts = [("TEAM/USER", "active"), ("team-user", "secondary")]
+                .into_iter()
+                .map(|(id, token)| {
+                    (
+                        id.to_string(),
+                        CursorCredentials {
+                            session_token: token.to_string(),
+                            user_id: Some(id.to_string()),
+                            created_at: "2026-01-01T00:00:00Z".into(),
+                            expires_at: None,
+                            label: None,
+                        },
+                    )
+                })
+                .collect();
+            save_credentials_store_in_home(
+                home.path(),
+                &CursorCredentialsStore {
+                    version: 1,
+                    active_account_id: "TEAM/USER".into(),
+                    accounts,
+                },
+            )?;
+            let cache = cursor_cache_dir(home.path());
+            fs::create_dir_all(&cache)?;
+            fs::write(
+                cache.join("usage.json"),
+                json_page(1, &[&json_event("a", "1788171994001")]),
+            )?;
+            let secondary = String::from_utf8(json_page(1, &[&json_event("b", "1788171994002")]))?;
+            let secondary_path = cache.join(format!("usage.team-user.{extension}"));
+            if extension == "json" {
+                fs::write(&secondary_path, &secondary)?;
+            } else {
+                fs::write(&secondary_path, "Date,Model,Input (w/ Cache Write),Input (w/o Cache Write),Cache Read,Output Tokens,Total Tokens,Cost,Cost to you\n2026-01-01,gpt-5,0,10,0,20,30,0.01,0.01\n")?;
+            }
+            let partial = aggregated_usage_events(
+                vec![
+                    serde_json::from_str(&json_event("a", "1788171994001"))?,
+                    serde_json::from_str(&json_event("c", "1788171994003"))?,
+                ],
+                true,
+            )?;
+            let result = tokio::runtime::Runtime::new()?.block_on(
+                sync_cursor_cache_with_fetcher_in_home(home.path(), |token| {
+                    std::future::ready(if token == "active" {
+                        Ok(partial.clone())
+                    } else if extension == "json" {
+                        Ok(secondary.clone())
+                    } else {
+                        Err(anyhow::anyhow!("secondary unavailable"))
+                    })
+                }),
+            );
+            assert!(result.synced);
+            let active_rows =
+                tokscale_core::sessions::cursor::parse_cursor_file(&cache.join("usage.json"));
+            assert_eq!(active_rows.len(), 2);
+            assert!(active_rows.iter().all(|row| row.session_id != "b"));
+            assert!(secondary_path.exists());
+            let rows: usize = tokscale_core::scanner::scan_all_clients_with_env_strategy(
+                home.path().to_str().unwrap(),
+                &["cursor".into()],
+                false,
+            )
+            .get(tokscale_core::clients::ClientId::Cursor)
+            .iter()
+            .map(|path| tokscale_core::sessions::cursor::parse_cursor_file(path).len())
+            .sum();
+            assert_eq!(
+                rows, 3,
+                "distinct accounts with colliding stems remain independent"
+            );
+        }
         Ok(())
     }
 
