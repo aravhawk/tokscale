@@ -94,6 +94,33 @@ fn record_parse_cursor_file_call(path: &Path) {
     }
 }
 
+/// Account spelling shared by the CLI cache writer and scanner alias matching.
+pub fn sanitize_account_id_for_filename(account_id: &str) -> String {
+    let sanitized: String = account_id
+        .trim()
+        .to_lowercase()
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let trimmed = sanitized.trim_matches('-');
+    let result = if trimmed.len() > 80 {
+        &trimmed[..80]
+    } else {
+        trimmed
+    };
+    if result.is_empty() {
+        "account".to_string()
+    } else {
+        result.to_string()
+    }
+}
+
 fn account_id_from_cursor_cache_path(path: &Path) -> String {
     let file_name = path
         .file_name()

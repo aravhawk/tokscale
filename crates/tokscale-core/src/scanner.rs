@@ -3023,9 +3023,17 @@ fn scan_all_clients_with_env_strategy_inner(
 }
 
 /// Drop each Cursor `usage[.account].csv` whose `usage[.account].json` sibling
-/// is also present, so an account is parsed from exactly one file.
+/// is also present, so an account is parsed from exactly one format. The saved
+/// active account's named cache is an alias of `usage`, not another account.
 fn prefer_cursor_json_over_csv(files: &mut Vec<PathBuf>) {
-    let json_stems: HashSet<PathBuf> = files
+    if !files.iter().any(|path| {
+        path.extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("csv"))
+    }) {
+        return;
+    }
+    let mut json_stems: HashSet<PathBuf> = files
         .iter()
         .filter(|path| {
             path.extension()
@@ -3034,6 +3042,37 @@ fn prefer_cursor_json_over_csv(files: &mut Vec<PathBuf>) {
         })
         .map(|path| path.with_extension(""))
         .collect();
+
+    #[derive(serde::Deserialize)]
+    struct ActiveAccount {
+        #[serde(rename = "activeAccountId")]
+        id: String,
+    }
+
+    let roots: HashSet<_> = json_stems.iter().filter_map(|path| path.parent()).collect();
+    let mut active_aliases = Vec::new();
+    for root in roots {
+        let Some(config_dir) = root.parent() else {
+            continue;
+        };
+        // Deserialize only account identity; token fields are ignored.
+        let active = std::fs::File::open(config_dir.join("cursor-credentials.json"))
+            .ok()
+            .and_then(|file| {
+                serde_json::from_reader::<_, ActiveAccount>(std::io::BufReader::new(file)).ok()
+            })
+            .filter(|active| !active.id.trim().is_empty());
+        let Some(active) = active else {
+            continue;
+        };
+        let account = crate::sessions::cursor::sanitize_account_id_for_filename(&active.id);
+        let canonical = root.join("usage");
+        let named = root.join(format!("usage.{account}"));
+        if json_stems.contains(&canonical) || json_stems.contains(&named) {
+            active_aliases.extend([canonical, named]);
+        }
+    }
+    json_stems.extend(active_aliases);
 
     files.retain(|path| {
         let is_csv = path
@@ -3736,6 +3775,42 @@ mod tests {
                 "usage.team-b.csv".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn test_cursor_json_preference_recognizes_only_the_saved_active_alias() {
+        let dir = TempDir::new().unwrap();
+        let cache = dir.path().join("cursor-cache");
+        fs::create_dir_all(&cache).unwrap();
+        let credentials = dir.path().join("cursor-credentials.json");
+        for (json, csv) in [
+            ("usage.json", "usage.team-user.csv"),
+            ("usage.team-user.json", "usage.csv"),
+        ] {
+            let original = vec![
+                cache.join(json),
+                cache.join(csv),
+                cache.join("usage.other.csv"),
+            ];
+            fs::write(&credentials, r#"{"activeAccountId":" TEAM/USER ","accounts":{"ignored":{"sessionToken":"unused"}}}"#).unwrap();
+            let mut files = original.clone();
+            prefer_cursor_json_over_csv(&mut files);
+            assert_eq!(files, vec![cache.join(json), cache.join("usage.other.csv")]);
+
+            for metadata in [
+                "not JSON",
+                r#"{"activeAccountId":"another-account"}"#,
+                r#"{"activeAccountId":" "}"#,
+            ] {
+                fs::write(&credentials, metadata).unwrap();
+                let mut files = original.clone();
+                prefer_cursor_json_over_csv(&mut files);
+                assert_eq!(
+                    files, original,
+                    "unknown identity must not hide another account's CSV"
+                );
+            }
+        }
     }
 
     #[test]

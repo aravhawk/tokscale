@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -294,28 +294,24 @@ fn build_cursor_json_headers(session_token: &str) -> reqwest::header::HeaderMap 
 
 /// One parse of an aggregated usage-events document. Invalid JSON is an empty
 /// non-partial document, so a corrupt cache counts as nothing to keep.
+#[derive(Default, Deserialize)]
 struct CursorUsageDocument {
+    #[serde(rename = "usageEventsDisplay")]
     events: Vec<serde_json::Value>,
+    #[serde(default, deserialize_with = "deserialize_cursor_partial")]
     partial: bool,
 }
 
+fn deserialize_cursor_partial<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<bool, D::Error> {
+    Ok(serde_json::Value::deserialize(deserializer)?
+        .as_bool()
+        .unwrap_or(false))
+}
+
 fn parse_cursor_usage_document(json_text: &str) -> CursorUsageDocument {
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(json_text) else {
-        return CursorUsageDocument {
-            events: Vec::new(),
-            partial: false,
-        };
-    };
-    let events = value
-        .get("usageEventsDisplay")
-        .and_then(|events| events.as_array())
-        .cloned()
-        .unwrap_or_default();
-    let partial = value
-        .get("partial")
-        .and_then(|flag| flag.as_bool())
-        .unwrap_or(false);
-    CursorUsageDocument { events, partial }
+    serde_json::from_str(json_text).unwrap_or_default()
 }
 
 /// Count events in an aggregated usage-events JSON document. Invalid JSON or a
@@ -333,25 +329,60 @@ fn cursor_usage_json_is_partial(json_text: &str) -> bool {
     parse_cursor_usage_document(json_text).partial
 }
 
-/// Union two usage-event lists. Identity is the event object itself, so a
-/// partial page that overlaps the cache does not double-count, and events that
-/// page never reached stay in the result.
+/// Union two snapshots without counting their overlapping events twice.
+/// Identical rows can occur more than once in one snapshot; retain the larger
+/// occurrence count rather than collapsing those events into a set.
 fn merge_cursor_usage_events(
     existing: &[serde_json::Value],
     incoming: &[serde_json::Value],
 ) -> Vec<serde_json::Value> {
-    let mut seen = HashSet::with_capacity(existing.len().saturating_add(incoming.len()));
-    let mut merged = Vec::with_capacity(existing.len().saturating_add(incoming.len()));
-    for event in existing.iter().chain(incoming.iter()) {
-        let Ok(key) = serde_json::to_string(event) else {
-            merged.push(event.clone());
-            continue;
-        };
-        if seen.insert(key) {
+    let mut remaining = HashMap::<String, usize>::new();
+    for event in existing {
+        if let Ok(key) = serde_json::to_string(event) {
+            *remaining.entry(key).or_default() += 1;
+        }
+    }
+    let mut merged = existing.to_vec();
+    for event in incoming {
+        let overlap = serde_json::to_string(event)
+            .ok()
+            .and_then(|key| remaining.get_mut(&key))
+            .filter(|count| **count > 0);
+        if let Some(count) = overlap {
+            *count -= 1;
+        } else {
             merged.push(event.clone());
         }
     }
     merged
+}
+
+/// Collapse the two active-account JSON names before fetching. A failed or
+/// partial fetch must leave one union of cached history visible to reports.
+fn reconcile_active_json_alias(active_path: &Path, alias_path: &Path) -> Result<()> {
+    if !alias_path.exists() {
+        return Ok(());
+    }
+    let read = |path: &Path| -> Result<CursorUsageDocument> {
+        let file = fs::File::open(path)?;
+        serde_json::from_reader(std::io::BufReader::new(file))
+            .with_context(|| format!("Invalid Cursor cache at {}", path.display()))
+    };
+    let alias = read(alias_path)?;
+    if !active_path.exists() {
+        fs::rename(alias_path, active_path)?;
+        return Ok(());
+    }
+    let active = read(active_path)?;
+    let merged = merge_cursor_usage_events(&active.events, &alias.events);
+    if merged.len() > active.events.len() {
+        atomic_write_file(
+            active_path,
+            &aggregated_usage_events(merged, active.partial || alias.partial)?,
+        )?;
+    }
+    fs::remove_file(alias_path)?;
+    Ok(())
 }
 
 fn error_is_reqwest_timeout(err: &anyhow::Error) -> bool {
@@ -688,29 +719,7 @@ fn derive_account_id(session_token: &str) -> String {
 }
 
 fn sanitize_account_id_for_filename(account_id: &str) -> String {
-    let sanitized: String = account_id
-        .trim()
-        .to_lowercase()
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-' {
-                c
-            } else {
-                '-'
-            }
-        })
-        .collect();
-    let trimmed = sanitized.trim_matches('-');
-    let result = if trimmed.len() > 80 {
-        &trimmed[..80]
-    } else {
-        trimmed
-    };
-    if result.is_empty() {
-        "account".to_string()
-    } else {
-        result.to_string()
-    }
+    tokscale_core::sessions::cursor::sanitize_account_id_for_filename(account_id)
 }
 
 pub fn load_credentials_store() -> Option<CursorCredentialsStore> {
@@ -1676,12 +1685,16 @@ where
         let _ = fs::set_permissions(&cache_dir, fs::Permissions::from_mode(0o700));
     }
 
-    let mut total_rows = 0;
-    let mut success_count = 0;
-    let mut errors: Vec<String> = Vec::new();
     let active_sanitized = sanitize_account_id_for_filename(&store.active_account_id);
     let dup_json = cache_dir.join(format!("usage.{active_sanitized}.json"));
     let dup_csv = cache_dir.join(format!("usage.{active_sanitized}.csv"));
+    let alias_reconcile_error =
+        reconcile_active_json_alias(&cache_dir.join("usage.json"), &dup_json)
+            .err()
+            .map(|error| format!("Failed to reconcile active Cursor JSON caches: {error:#}"));
+    let mut total_rows = 0;
+    let mut success_count = 0;
+    let mut errors: Vec<String> = Vec::new();
     let mut active_cache_complete = None;
 
     for (account_id, credentials) in &store.accounts {
@@ -1794,18 +1807,11 @@ where
         }
     }
 
-    // Reconcile the active account's leftover per-account duplicate. The active
-    // account is cached as `usage.json`; a `usage.<active_id>.json` copy left
-    // over from when it was a secondary is only safe to drop once `usage.json`
-    // is complete on disk — whether this run just wrote it or a prior run
-    // did. Requiring a complete cache keeps the duplicate when a failed first-time
-    // fetch leaves no `usage.json` (it is then the only data we have), while a
-    // failed fetch that still has a good `usage.json` clears the duplicate so the
-    // scanner never reads both JSON caches and double-counts the active account.
-    // The JSON dup is a stale copy (removed); the legacy CSV dup is archived so
-    // pre-migration history survives.
+    // JSON aliases were consolidated before fetching. Retire any remaining
+    // fallback only when a complete active cache is authoritative; partial or
+    // empty responses must leave legacy CSV bytes available for recovery.
     let active_json = cache_dir.join("usage.json");
-    if (dup_json.exists() || dup_csv.exists())
+    let can_retire_fallbacks = (dup_json.exists() || dup_csv.exists())
         && active_json.exists()
         && active_cache_complete.unwrap_or_else(|| {
             fs::read_to_string(&active_json)
@@ -1814,8 +1820,8 @@ where
                     !document.partial && !document.events.is_empty()
                 })
                 .unwrap_or(false)
-        })
-    {
+        });
+    if can_retire_fallbacks {
         if dup_json.exists() {
             let _ = fs::remove_file(&dup_json);
         }
@@ -1841,15 +1847,17 @@ where
         .open(cache_dir.join(CURSOR_SYNC_ATTEMPT_MARKER));
 
     if success_count == 0 {
+        let mut error = errors
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "Cursor sync failed".to_string());
+        if let Some(alias_error) = alias_reconcile_error {
+            error.push_str(&format!("; {alias_error}"));
+        }
         return SyncCursorResult {
             synced: false,
             rows: 0,
-            error: Some(
-                errors
-                    .first()
-                    .cloned()
-                    .unwrap_or_else(|| "Cursor sync failed".to_string()),
-            ),
+            error: Some(error),
         };
     }
 
@@ -4016,7 +4024,7 @@ mod tests {
                 let old_cache = if extension == "json" {
                     old_json.clone()
                 } else {
-                    "Date,Model,Input Tokens\n2026-01-01,gpt-5,123\n".to_string()
+                    "Date,Model,Input (w/ Cache Write),Input (w/o Cache Write),Cache Read,Output Tokens,Total Tokens,Cost,Cost to you\n2026-01-01T00:00:00Z,gpt-5,0,10,0,20,30,0.01,0.01\n".to_string()
                 };
                 fs::write(&fallback, &old_cache)?;
                 let active = cache_dir.join("usage.json");
@@ -4034,31 +4042,48 @@ mod tests {
                     |_| std::future::ready(Ok(partial.clone())),
                 ));
 
-                assert!(!result.synced, "partial fetch must retain fallback history");
-                assert_eq!(fs::read_to_string(&fallback)?, old_cache);
-                if has_active_json {
-                    assert_eq!(fs::read_to_string(&active)?, old_json);
+                let expected_rows = if extension == "json" { 2 } else { 1 };
+                if extension == "json" {
+                    assert!(result.synced);
+                    assert!(!fallback.exists());
+                    assert_eq!(count_cursor_json_events(&fs::read_to_string(&active)?), 2);
                 } else {
-                    assert!(
-                        !active.exists(),
-                        "partial JSON must not replace the fallback"
-                    );
+                    assert!(!result.synced);
+                    assert_eq!(fs::read_to_string(&fallback)?, old_cache);
+                    if has_active_json {
+                        assert_eq!(fs::read_to_string(&active)?, old_json);
+                    } else {
+                        assert!(!active.exists());
+                    }
                 }
                 assert!(!cache_dir.join("archive").exists());
+                let reported_rows = || {
+                    tokscale_core::scanner::scan_all_clients_with_env_strategy(
+                        temp_dir.path().to_str().unwrap(),
+                        &["cursor".to_string()],
+                        false,
+                    )
+                    .get(tokscale_core::clients::ClientId::Cursor)
+                    .iter()
+                    .flat_map(|path| tokscale_core::sessions::cursor::parse_cursor_file(path))
+                    .count()
+                };
+                assert_eq!(
+                    reported_rows(),
+                    expected_rows,
+                    "active aliases must not double-count usage"
+                );
 
+                let cached_active = fs::read_to_string(&active).ok();
                 let result = runtime.block_on(sync_cursor_cache_with_fetcher_in_home(
                     temp_dir.path(),
                     |_| std::future::ready(Ok(r#"{"usageEventsDisplay":[]}"#.to_string())),
                 ));
-                assert!(
-                    !result.synced,
-                    "an empty fetch must also retain fallback history"
-                );
-                assert_eq!(fs::read_to_string(&fallback)?, old_cache);
-                if has_active_json {
-                    assert_eq!(fs::read_to_string(&active)?, old_json);
-                } else {
-                    assert!(!active.exists());
+                assert!(!result.synced, "an empty fetch must retain cached history");
+                assert_eq!(fs::read_to_string(&active).ok(), cached_active);
+                assert_eq!(reported_rows(), expected_rows);
+                if extension == "csv" {
+                    assert_eq!(fs::read_to_string(&fallback)?, old_cache);
                 }
                 assert!(!cache_dir.join("archive").exists());
 
@@ -4089,7 +4114,90 @@ mod tests {
     }
 
     #[test]
-    fn test_sync_failed_fetch_reconciles_duplicates_only_with_complete_cache() -> Result<()> {
+    fn test_sync_reconciles_json_aliases_without_losing_distinct_or_repeated_events() -> Result<()>
+    {
+        let home = TempDir::new()?;
+        save_credentials_store_in_home(
+            home.path(),
+            &CursorCredentialsStore {
+                version: 1,
+                active_account_id: "account".to_string(),
+                accounts: HashMap::from([(
+                    "account".to_string(),
+                    CursorCredentials {
+                        session_token: "test-token".to_string(),
+                        user_id: Some("account".to_string()),
+                        created_at: "2026-01-01T00:00:00Z".to_string(),
+                        expires_at: None,
+                        label: None,
+                    },
+                )]),
+            },
+        )?;
+        let cache = cursor_cache_dir(home.path());
+        fs::create_dir_all(&cache)?;
+        let active = cache.join("usage.json");
+        let alias = cache.join("usage.account.json");
+        let a: serde_json::Value = serde_json::from_str(&json_event("a", "1788171994001"))?;
+        let b: serde_json::Value = serde_json::from_str(&json_event("b", "1788171994002"))?;
+        let c: serde_json::Value = serde_json::from_str(&json_event("c", "1788171994003"))?;
+        fs::write(
+            &active,
+            aggregated_usage_events(vec![a.clone(), a.clone()], true)?,
+        )?;
+        fs::write(
+            &alias,
+            aggregated_usage_events(vec![a.clone(), b.clone()], false)?,
+        )?;
+        let runtime = tokio::runtime::Runtime::new()?;
+        let result = runtime.block_on(sync_cursor_cache_with_fetcher_in_home(home.path(), |_| {
+            std::future::ready(Err(anyhow::anyhow!("network down")))
+        }));
+        assert!(!result.synced);
+        assert!(!alias.exists());
+        let reported = tokscale_core::sessions::cursor::parse_cursor_file(&active);
+        assert_eq!(reported.len(), 3);
+        assert_eq!(
+            reported.iter().filter(|row| row.session_id == "a").count(),
+            2
+        );
+        assert_eq!(
+            reported.iter().filter(|row| row.session_id == "b").count(),
+            1
+        );
+
+        let partial = aggregated_usage_events(
+            vec![a.clone(), a.clone(), a.clone(), b.clone(), c.clone()],
+            true,
+        )?;
+        let result = runtime.block_on(sync_cursor_cache_with_fetcher_in_home(home.path(), |_| {
+            std::future::ready(Ok(partial.clone()))
+        }));
+        assert!(result.synced);
+        assert_eq!(
+            result.rows, 5,
+            "snapshot overlap must preserve the larger occurrence count"
+        );
+        assert_eq!(
+            tokscale_core::sessions::cursor::parse_cursor_file(&active).len(),
+            5
+        );
+
+        // A malformed old alias must not prevent a later full fetch repairing it.
+        fs::write(&alias, "not JSON")?;
+        let complete = aggregated_usage_events(vec![a, b, c], false)?;
+        let result = runtime.block_on(sync_cursor_cache_with_fetcher_in_home(home.path(), |_| {
+            std::future::ready(Ok(complete.clone()))
+        }));
+        assert!(result.synced);
+        assert_eq!(result.rows, 3);
+        assert_eq!(fs::read_to_string(&active)?, complete);
+        assert!(!alias.exists());
+        Ok(())
+    }
+
+    #[test]
+    fn test_sync_failed_fetch_keeps_legacy_csv_until_active_cache_is_complete() -> Result<()> {
         for partial in [false, true] {
             let temp_dir = TempDir::new()?;
 
@@ -4113,8 +4221,8 @@ mod tests {
                 },
             )?;
 
-            // Failed fetches may reconcile an old complete cache, but a partial
-            // active cache cannot make the fallback history redundant.
+            // JSON aliases are unioned before fetching. A failed fetch may
+            // archive CSV only when the existing active cache is complete.
             let cache_dir = cursor_cache_dir(temp_dir.path());
             fs::create_dir_all(&cache_dir)?;
             let good = aggregated_usage_events(
@@ -4137,10 +4245,7 @@ mod tests {
                 good,
                 "a failed fetch must not clobber the existing active cache"
             );
-            assert_eq!(
-                cache_dir.join("usage.active-account.json").exists(),
-                partial
-            );
+            assert!(!cache_dir.join("usage.active-account.json").exists());
             assert_eq!(cache_dir.join("usage.active-account.csv").exists(), partial);
             if partial {
                 assert!(!cache_dir.join("archive").exists());
